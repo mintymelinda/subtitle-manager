@@ -275,8 +275,47 @@ def candidate_decision(candidate_id: int, request: CandidateDecisionRequest):
     return decision
 
 
+def _run_injection_job(job_id: int, candidate_id: int, row: dict,
+                       source: Path, subtitle: Path):
+    start_job(job_id)
+    update_job_progress(job_id, phase="muxing", current_file=row["media_relative_path"], total=1)
+    logger.info("injection_started", extra={"event":"injection_started","job_id":job_id,
+                "candidate_id":candidate_id,"media_path":row["media_relative_path"],"phase":"muxing"})
+    pattern = f".{source.name}.recovery-*.bak"
+    before = set(source.parent.glob(pattern))
+    try:
+        result = patch_mkv(source, subtitle, approved=True, test_mode=settings.test_mode,
+                           expected_size=row["media_size"], expected_mtime=row["media_modified_at"])
+        finish_candidate_patch(candidate_id, "patched", result, result.get("backup"))
+        record_job_item(job_id, media_path=row["media_relative_path"], status="completed",
+                        phase="verified", candidate_id=candidate_id, review_decision="approved",
+                        patch_status="patched", details=result)
+        update_job_progress(job_id, phase="completed", completed=1, succeeded=1)
+        finish_job(job_id, "completed")
+        logger.info("injection_completed", extra={"event":"injection_completed","job_id":job_id,
+                    "candidate_id":candidate_id,"media_path":row["media_relative_path"],
+                    "phase":"verified","status":"patched"})
+    except Exception as exc:
+        backups = set(source.parent.glob(pattern)) - before
+        backup = str(max(backups, key=lambda p:p.stat().st_mtime_ns)) if backups else None
+        error = f"{type(exc).__name__}: {str(exc)[:400]}"
+        try:
+            finish_candidate_patch(candidate_id, "failed", {"error":error,"recovery_path":backup}, backup)
+        except Exception:
+            logger.exception("patch_history_write_failed", extra={"event":"patch_history_write_failed",
+                             "job_id":job_id,"candidate_id":candidate_id})
+        record_job_item(job_id, media_path=row["media_relative_path"], status="failed",
+                        phase="injection", candidate_id=candidate_id, review_decision="approved",
+                        patch_status="failed", error=error, details={"recovery_path":backup})
+        update_job_progress(job_id, phase="failed", completed=1, failed=1)
+        finish_job(job_id, "failed", error)
+        logger.exception("injection_failed", extra={"event":"injection_failed","job_id":job_id,
+                         "candidate_id":candidate_id,"media_path":row["media_relative_path"],
+                         "phase":"injection","error_type":type(exc).__name__})
+
+
 @app.post("/api/candidates/{candidate_id}/inject")
-def inject_candidate(candidate_id: int, request: InjectRequest):
+def inject_candidate(candidate_id: int, request: InjectRequest, background_tasks: BackgroundTasks):
     if request.confirm is not True:
         raise HTTPException(status_code=400, detail="Explicit confirmation is required for media modification.")
     row = get_candidate(candidate_id)
@@ -336,30 +375,13 @@ def inject_candidate(candidate_id: int, request: InjectRequest):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if claimed is None:
         raise HTTPException(status_code=404, detail="Candidate not found.")
-    recovery_pattern = f".{source.name}.recovery-*.bak"
-    recoveries_before = set(source.parent.glob(recovery_pattern))
-    try:
-        result = patch_mkv(source, subtitle, approved=True, test_mode=settings.test_mode, expected_size=row["media_size"], expected_mtime=row["media_modified_at"])
-    except Exception as exc:
-        recovery_files = set(source.parent.glob(recovery_pattern)) - recoveries_before
-        recovery_path = str(max(recovery_files, key=lambda p: p.stat().st_mtime_ns)) if recovery_files else None
-        safe_error = f"{type(exc).__name__}: {str(exc)[:400]}"
-        try:
-            finish_candidate_patch(
-                candidate_id, "failed",
-                {"error": safe_error, "recovery_path": recovery_path}, recovery_path,
-            )
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail="Subtitle injection failed. The original was preserved or restored where possible; inspect the retained recovery file and application logs.") from exc
-
-    finish_candidate_patch(candidate_id, "patched", result, result.get("backup"))
-    return {
-        "candidate_id": candidate_id,
-        "media": row["media_relative_path"],
-        "test_mode": settings.test_mode,
-        **result,
-    }
+    job = create_job("inject", total=1, metadata={"candidate_id":candidate_id,
+                      "test_mode":bool(settings.test_mode)})
+    background_tasks.add_task(_run_injection_job, job["id"], candidate_id, row, source, subtitle)
+    logger.info("injection_queued", extra={"event":"injection_queued","job_id":job["id"],
+                "candidate_id":candidate_id,"media_path":row["media_relative_path"],"phase":"queued"})
+    return {"job_id":job["id"],"candidate_id":candidate_id,"status":"queued",
+            "test_mode":settings.test_mode}
 
 
 def _scan_worker(job_id: int, root: Path):
