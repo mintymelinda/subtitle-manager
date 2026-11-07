@@ -7,7 +7,7 @@ A self-hosted web application for finding missing English subtitles and adding a
 - Scanning and subtitle discovery do not modify media.
 - OpenSubtitles results are ranked and downloaded into a private application staging directory, never into the media library.
 - **Every media modification requires explicit approval for that file.**
-- Test mode is enabled by default and is intended to process exactly one approved file.
+- Test mode is enabled by default. Each injection action targets exactly one explicitly approved file and retains its recovery copy. **Test mode still performs the replacement**; it is not a dry run.
 - Patching is transactional: the application builds and validates a working copy, retains a temporary original for recovery, then atomically replaces the source on the same filesystem where possible.
 - No permanent library-wide backups are created. Temporary recovery copies are removed after successful verification in normal mode; test mode retains its backup for inspection.
 - On failure, the original is left in place and temporary recovery files are retained.
@@ -26,7 +26,10 @@ A self-hosted web application for finding missing English subtitles and adding a
   - Filters machine-translated results and unsupported subtitle formats.
   - Downloads up to the configured number of top candidates per media file into `/app/data/staged-subtitles`.
   - Applies provider rate-limit handling, download-size limits, safe archive extraction, and secret-safe error messages.
-- Transactional MKV muxing module using MKVToolNix, with explicit approval required at the function boundary and stream-preservation checks.
+- Transactional MKV muxing using MKVToolNix, exposed through an API and dashboard action that requires both a persisted approval for the exact media/candidate pair and a separate confirmation.
+- Injection is restricted to MKV media and staged English subtitles inside the configured staging directory; media/staging symlink components and path escapes are rejected.
+- Before replacement, the working MKV is checked for unchanged video/audio streams, retained existing subtitle tracks, and a newly added English subtitle track. The output is verified again after atomic replacement.
+- Original file mode and timestamps are copied to the replacement; ownership is preserved where container permissions allow. Same-directory recovery copies remain available after failures and in test mode.
 - Responsive web dashboard to start scans, review persisted media inspection and track summaries, preview or download staged candidates, and record explicit per-file candidate approval or rejection.
 - Candidate review decisions are stored in SQLite, tied to the exact media path and scanned file size/mtime. Only one candidate can be approved for a media file at a time; changed media invalidates the previous decision.
 - GitHub Actions checks for Python compilation, unit tests, and Docker image build.
@@ -67,7 +70,7 @@ The API key and optional account credentials are read only by the server. They a
 
 4. Open http://localhost:8080, enter the folder you want to scan (default `/media`, or a subfolder such as `/media/Movies`), and start the scan. The folder prompt is restricted to the mounted media volume; it cannot browse outside that mount.
 
-Test mode is enabled by default. The current web interface can scan, inspect, search, and stage candidates, but it cannot approve or modify media yet.
+Test mode is enabled by default. After reviewing and approving a candidate, use **Inject approved subtitle** to patch that one MKV. Test mode performs the actual replacement and retains the original recovery copy beside the media file. Set `TEST_MODE=false` only when ready for normal operation; in normal mode the recovery copy is deleted only after successful post-replacement verification. The current patcher supports MKV containers only.
 
 ## Development
 

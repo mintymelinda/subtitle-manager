@@ -11,10 +11,12 @@ from app.config import settings
 from app.database import (
     initialize, record_scan, save_candidate, mark_candidate_staged,
     mark_candidate_error, list_candidates, list_media_files, set_candidate_decision,
+    get_candidate, claim_candidate_patch, finish_candidate_patch, recover_interrupted_patches,
 )
 from app.media import inspect_media
 from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError, assess_subtitle_payload
 from app.scanner import scan_media
+from app.patcher import patch_mkv
 
 app = FastAPI(title=settings.app_name)
 
@@ -27,9 +29,14 @@ class CandidateDecisionRequest(BaseModel):
     decision: str
 
 
+class InjectRequest(BaseModel):
+    confirm: bool = False
+
+
 @app.on_event("startup")
 def startup():
     initialize()
+    recover_interrupted_patches()
 
 
 def media_path_is_safe(path: Path, root: Path) -> bool:
@@ -134,7 +141,7 @@ button:disabled{opacity:.5;cursor:not-allowed}.notice{border-left:4px solid #eab
 input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-radius:8px;border:1px solid #64748b;background:#111827;color:#e5e7eb}
 </style></head><body><h1>Subtitle Manager</h1>
 <p>Find missing English subtitles and review candidates before changing media.</p>
-<div class="notice"><strong>Safety:</strong> scanning and subtitle downloads never change media files. Approving a candidate records your selection only; media modification is a separate workflow and is not available here.</div>
+<div class="notice"><strong>Safety:</strong> scanning and downloads never change media. Injection requires a separately approved candidate and a second confirmation. Current mode: <strong id="mode">loading…</strong>.</div>
 <section class="panel"><h2>Media scan</h2><label for="scan-path">Folder to scan</label><input id="scan-path" type="text" value="/media"><p>Enter a folder within the mounted /media directory.</p>
 <button id="scan">Start scan</button><p id="status">Ready.</p><div id="scan-results"></div></section>
 <section class="panel"><h2>Subtitle candidate review</h2><p>Every candidate is shown under its exact media file. Inspect the release, match rationale, and subtitle content before deciding.</p><div id="candidate-list">Loading saved candidates…</div></section>
@@ -149,10 +156,15 @@ function renderCandidates(items){candidateList.replaceChildren();if(!items.lengt
 for(const c of items){const card=el("article",undefined,"candidate");card.append(el("h3",c.media_relative_path));card.append(el("p","Candidate #"+c.id+" · "+c.file_name));line(card,"Provider language / format",c.language+" / "+c.format);line(card,"Release",c.release||"Not provided");line(card,"Match score",c.match_score);line(card,"Exact file hash match",c.moviehash_match?"Yes":"No");line(card,"Candidate download status",c.status);line(card,"Match rationale",(c.match_reasons||[]).join("; ")||"No rationale supplied");line(card,"Content check",c.content_status+(c.content_language?" · "+c.content_language:"")+(c.content_language_confidence?" · confidence "+Number(c.content_language_confidence).toFixed(2):""));line(card,"Existing audio tracks",streams(c.inspection?.audio_streams));line(card,"Existing subtitle tracks",streams(c.inspection?.subtitle_streams));
 if(c.is_stale)card.append(el("p","This candidate is stale: the media file changed after discovery. Rescan before reviewing.","warning"));
 card.append(el("p","Review decision: "+c.review_decision+(c.review_updated_at?" · "+c.review_updated_at:"")));
+line(card,"Injection status",c.patch_status||"not_started");
+if(c.patch_status==="interrupted")card.append(el("p","An earlier injection was interrupted. Inspect the media file and retained recovery copy manually before proceeding.","warning"));
 if(c.status==="staged"){const links=el("div",undefined,"actions"),preview=el("a","Preview subtitle"),download=el("a","Download candidate");preview.href="/api/candidates/"+c.id+"/preview";preview.target="_blank";preview.rel="noopener";download.href="/api/candidates/"+c.id+"/download";links.append(preview,download);card.append(links);}else if(c.last_error){card.append(el("p",c.last_error,"warning"));}
 if(c.status==="staged"&&c.review_decision==="pending"&&!c.is_stale){const actions=el("div",undefined,"actions"),approve=el("button","Approve this candidate"),reject=el("button","Reject this candidate");reject.className="secondary";approve.addEventListener("click",()=>decide(c.id,"approved",approve));reject.addEventListener("click",()=>decide(c.id,"rejected",reject));actions.append(approve,reject);card.append(actions);}
+if(c.status==="staged"&&c.review_decision==="approved"&&!c.is_stale&&c.patch_status!=="patched"&&c.patch_status!=="running"&&c.patch_status!=="interrupted"){const injectButton=el("button",c.patch_status==="failed"?"Retry injection":"Inject approved subtitle");injectButton.addEventListener("click",()=>inject(c.id,injectButton));card.append(injectButton);}
 candidateList.append(card);}}
 async function decide(id,decision,button){if(!confirm((decision==="approved"?"Approve":"Reject")+" this subtitle for this exact media file?"))return;button.disabled=true;try{const r=await fetch("/api/candidates/"+id+"/decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);await loadCandidates();}catch(e){alert("Could not save decision: "+e.message);button.disabled=false;}}
+async function inject(id,button){const mode=document.querySelector("#mode").textContent;const warning=mode==="TEST MODE"?"TEST MODE will replace this MKV and retain a recovery copy beside it.":"LIVE MODE will replace this MKV; its recovery copy is deleted only after post-replacement verification.";if(!confirm(warning+"\n\nInject the explicitly approved subtitle into this exact media file now?"))return;button.disabled=true;try{const r=await fetch("/api/candidates/"+id+"/inject",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirm:true})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);alert("Subtitle injection completed. "+(d.backup?"Recovery copy retained at: "+d.backup:"Temporary recovery copy removed after verification."));await loadCandidates();}catch(e){alert("Injection failed: "+e.message);button.disabled=false;await loadCandidates();}}
+fetch("/api/config").then(r=>r.json()).then(c=>{document.querySelector("#mode").textContent=c.test_mode?"TEST MODE":"LIVE MODE";}).catch(()=>{document.querySelector("#mode").textContent="unknown";});
 scanButton.addEventListener("click",async()=>{scanButton.disabled=true;status.textContent="Scanning media and staging candidates…";scanResults.replaceChildren();try{const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:document.querySelector("#scan-path").value})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);status.textContent="Scan complete: "+d.files.length+" media files inspected.";renderScan(d.files);await loadCandidates();}catch(e){status.textContent="Scan failed: "+e.message;}finally{scanButton.disabled=false;}});
 loadCandidates().catch(e=>candidateList.textContent="Could not load candidates: "+e.message);
 fetch("/api/media").then(r=>r.json()).then(d=>renderScan(d.media.map(m=>({path:m.relative_path,...m.inspection,has_verified_english_subtitle:m.has_verified_english_subtitle})))).catch(()=>{});
@@ -199,7 +211,7 @@ def candidates():
         "release", "moviehash_match", "download_count", "rating",
         "trusted_uploader", "hearing_impaired", "ai_translated", "match_score",
         "match_reasons", "status", "review_decision", "review_updated_at",
-        "last_error", "is_stale", "inspection",
+        "last_error", "is_stale", "inspection", "patch_status", "patch_started_at", "patch_completed_at",
     )
     return {"candidates": [{key: row.get(key) for key in fields} for row in rows], "count": len(rows)}
 
@@ -254,6 +266,93 @@ def candidate_decision(candidate_id: int, request: CandidateDecisionRequest):
     if decision is None:
         raise HTTPException(status_code=404, detail="Candidate not found.")
     return decision
+
+
+@app.post("/api/candidates/{candidate_id}/inject")
+def inject_candidate(candidate_id: int, request: InjectRequest):
+    if request.confirm is not True:
+        raise HTTPException(status_code=400, detail="Explicit confirmation is required for media modification.")
+    row = get_candidate(candidate_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+    if row["status"] != "staged" or row["review_decision"] != "approved":
+        raise HTTPException(status_code=409, detail="This exact subtitle candidate must be explicitly approved before injection.")
+    if row.get("patch_status") == "patched":
+        raise HTTPException(status_code=409, detail="This candidate has already been injected.")
+    media_root = Path(settings.media_root).resolve(strict=True)
+    relative = Path(row["media_relative_path"])
+    if relative.is_absolute() or ".." in relative.parts:
+        raise HTTPException(status_code=400, detail="Unsafe media path.")
+    source = media_root
+    try:
+        for part in relative.parts:
+            source = source / part
+            if source.is_symlink():
+                raise HTTPException(status_code=400, detail="Symlink components are not allowed in media paths.")
+        if not source.resolve(strict=True).is_relative_to(media_root):
+            raise HTTPException(status_code=400, detail="Media path escapes the configured media root.")
+        source = source.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=404, detail="The associated media file is unavailable.")
+    if not source.is_file() or source.suffix.lower() != ".mkv":
+        raise HTTPException(status_code=415, detail="Only existing MKV media files can be patched.")
+    current = source.stat()
+    if current.st_size != row["media_size"] or current.st_mtime != row["media_modified_at"]:
+        raise HTTPException(status_code=409, detail="The media file changed after approval. Rescan and approve a fresh candidate.")
+    staging_root = Path(settings.subtitle_staging_path).resolve(strict=True)
+    if staging_root == media_root or staging_root.is_relative_to(media_root):
+        raise HTTPException(status_code=400, detail="Subtitle staging must remain outside the media library.")
+    staged_value = Path(row.get("staged_path") or "")
+    try:
+        if not staged_value.is_absolute():
+            raise HTTPException(status_code=404, detail="Staged subtitle file is unavailable.")
+        staged_relative = staged_value.relative_to(staging_root)
+        staged_component = staging_root
+        for part in staged_relative.parts:
+            staged_component = staged_component / part
+            if staged_component.is_symlink():
+                raise HTTPException(status_code=400, detail="Symlink components are not allowed in staging paths.")
+        subtitle = staged_value.resolve(strict=True)
+        if not subtitle.is_relative_to(staging_root) or not subtitle.is_file():
+            raise HTTPException(status_code=404, detail="Staged subtitle file is unavailable.")
+    except (OSError, RuntimeError, ValueError):
+        raise HTTPException(status_code=404, detail="Staged subtitle file is unavailable.")
+    if row["language"].strip().lower() not in {"en", "eng", "english"}:
+        raise HTTPException(status_code=415, detail="Only English subtitle candidates can be injected.")
+    if subtitle.suffix.lower() not in {".srt", ".ass", ".ssa", ".sup", ".sub"}:
+        raise HTTPException(status_code=415, detail="Unsupported subtitle format.")
+    if Path(row["file_name"]).suffix.lower() != subtitle.suffix.lower():
+        raise HTTPException(status_code=409, detail="Staged subtitle format does not match the reviewed candidate.")
+    try:
+        claimed = claim_candidate_patch(candidate_id, test_mode=settings.test_mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if claimed is None:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+    recovery_pattern = f".{source.name}.recovery-*.bak"
+    recoveries_before = set(source.parent.glob(recovery_pattern))
+    try:
+        result = patch_mkv(source, subtitle, approved=True, test_mode=settings.test_mode, expected_size=row["media_size"], expected_mtime=row["media_modified_at"])
+    except Exception as exc:
+        recovery_files = set(source.parent.glob(recovery_pattern)) - recoveries_before
+        recovery_path = str(max(recovery_files, key=lambda p: p.stat().st_mtime_ns)) if recovery_files else None
+        safe_error = f"{type(exc).__name__}: {str(exc)[:400]}"
+        try:
+            finish_candidate_patch(
+                candidate_id, "failed",
+                {"error": safe_error, "recovery_path": recovery_path}, recovery_path,
+            )
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="Subtitle injection failed. The original was preserved or restored where possible; inspect the retained recovery file and application logs.") from exc
+
+    finish_candidate_patch(candidate_id, "patched", result, result.get("backup"))
+    return {
+        "candidate_id": candidate_id,
+        "media": row["media_relative_path"],
+        "test_mode": settings.test_mode,
+        **result,
+    }
 
 
 @app.post("/api/scan")

@@ -60,6 +60,9 @@ def initialize():
             staged_path TEXT,
             review_decision TEXT NOT NULL DEFAULT 'pending',
             review_updated_at TEXT,
+            patch_status TEXT NOT NULL DEFAULT 'not_started',
+            patch_started_at TEXT,
+            patch_completed_at TEXT,
             provider_download_remaining INTEGER,
             last_error TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -77,6 +80,17 @@ def initialize():
             db.execute("ALTER TABLE subtitle_candidates ADD COLUMN review_decision TEXT NOT NULL DEFAULT 'pending'")
         if "review_updated_at" not in candidate_columns:
             db.execute("ALTER TABLE subtitle_candidates ADD COLUMN review_updated_at TEXT")
+        if "patch_status" not in candidate_columns:
+            db.execute("ALTER TABLE subtitle_candidates ADD COLUMN patch_status TEXT NOT NULL DEFAULT 'not_started'")
+        if "patch_started_at" not in candidate_columns:
+            db.execute("ALTER TABLE subtitle_candidates ADD COLUMN patch_started_at TEXT")
+        if "patch_completed_at" not in candidate_columns:
+            db.execute("ALTER TABLE subtitle_candidates ADD COLUMN patch_completed_at TEXT")
+        history_columns = {row[1] for row in db.execute("PRAGMA table_info(patch_history)")}
+        if "candidate_id" not in history_columns:
+            db.execute("ALTER TABLE patch_history ADD COLUMN candidate_id INTEGER")
+        if "backup_path" not in history_columns:
+            db.execute("ALTER TABLE patch_history ADD COLUMN backup_path TEXT")
         db.executescript("""
         CREATE INDEX IF NOT EXISTS idx_subtitle_candidates_media
             ON subtitle_candidates(media_relative_path);
@@ -141,6 +155,21 @@ def save_candidate(media_relative_path: str, media_size: int, media_modified_at:
                     WHEN subtitle_candidates.media_size != excluded.media_size
                       OR subtitle_candidates.media_modified_at != excluded.media_modified_at
                     THEN NULL ELSE subtitle_candidates.review_updated_at END,
+                patch_status=CASE
+                    WHEN (subtitle_candidates.media_size != excluded.media_size
+                      OR subtitle_candidates.media_modified_at != excluded.media_modified_at)
+                      AND subtitle_candidates.patch_status='patched'
+                    THEN 'not_started' ELSE subtitle_candidates.patch_status END,
+                patch_started_at=CASE
+                    WHEN (subtitle_candidates.media_size != excluded.media_size
+                      OR subtitle_candidates.media_modified_at != excluded.media_modified_at)
+                      AND subtitle_candidates.patch_status='patched'
+                    THEN NULL ELSE subtitle_candidates.patch_started_at END,
+                patch_completed_at=CASE
+                    WHEN (subtitle_candidates.media_size != excluded.media_size
+                      OR subtitle_candidates.media_modified_at != excluded.media_modified_at)
+                      AND subtitle_candidates.patch_status='patched'
+                    THEN NULL ELSE subtitle_candidates.patch_completed_at END,
                 updated_at=CURRENT_TIMESTAMP
         """, (
             media_relative_path, media_size, media_modified_at,
@@ -258,3 +287,95 @@ def list_media_files() -> list[dict]:
         item["inspection"] = json.loads(item.pop("inspection_json") or "{}")
         results.append(item)
     return results
+
+
+def get_candidate(candidate_id: int) -> dict | None:
+    with connect() as db:
+        row = db.execute("SELECT * FROM subtitle_candidates WHERE id=?", (candidate_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def claim_candidate_patch(candidate_id: int, *, test_mode: bool = False) -> dict | None:
+    """Atomically reserve one approved candidate for a single patch operation."""
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM subtitle_candidates WHERE id=?", (candidate_id,)).fetchone()
+        if row is None:
+            return None
+        if row["status"] != "staged" or row["review_decision"] != "approved":
+            raise ValueError("This exact candidate must be staged and explicitly approved before injection.")
+        if row["patch_status"] == "patched":
+            raise ValueError("This candidate has already been injected.")
+        if row["patch_status"] == "running":
+            raise ValueError("An injection for this candidate is already running.")
+        if row["patch_status"] == "interrupted":
+            raise ValueError("A previous injection was interrupted. Inspect the media and recovery copy before retrying.")
+        if test_mode:
+            other_running = db.execute(
+                "SELECT id FROM subtitle_candidates WHERE patch_status='running' AND id!=? LIMIT 1",
+                (candidate_id,),
+            ).fetchone()
+            if other_running:
+                raise ValueError("Test mode permits only one injection to run at a time.")
+        db.execute(
+            """UPDATE subtitle_candidates
+               SET patch_status='running', patch_started_at=CURRENT_TIMESTAMP,
+                   patch_completed_at=NULL, updated_at=CURRENT_TIMESTAMP
+               WHERE id=? AND patch_status IN ('not_started', 'failed')""",
+            (candidate_id,),
+        )
+        claimed = db.execute("SELECT * FROM subtitle_candidates WHERE id=?", (candidate_id,)).fetchone()
+        return dict(claimed)
+
+
+def finish_candidate_patch(candidate_id: int, status: str, details: dict,
+                           backup_path: str | None = None) -> None:
+    if status not in {"patched", "failed"}:
+        raise ValueError("Invalid patch result status.")
+    with connect() as db:
+        db.execute(
+            """UPDATE subtitle_candidates
+               SET patch_status=?, patch_completed_at=CURRENT_TIMESTAMP,
+                   updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+            (status, candidate_id),
+        )
+        row = db.execute(
+            "SELECT media_relative_path, file_name FROM subtitle_candidates WHERE id=?",
+            (candidate_id,),
+        ).fetchone()
+        if row:
+            db.execute(
+                """INSERT INTO patch_history(
+                       relative_path, subtitle_name, status, details, candidate_id, backup_path
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (row["media_relative_path"], row["file_name"], status,
+                 json.dumps(details), candidate_id, backup_path),
+            )
+
+
+def recover_interrupted_patches() -> int:
+    """Mark operations left running by a process restart; never guess whether to retry."""
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        rows = db.execute(
+            "SELECT id, media_relative_path, file_name FROM subtitle_candidates WHERE patch_status='running'"
+        ).fetchall()
+        for row in rows:
+            details = {
+                "error": "Application restarted while injection was running. Inspect the media file and retained recovery copies before taking further action.",
+                "recovery_required": True,
+            }
+            db.execute(
+                """UPDATE subtitle_candidates
+                   SET patch_status='interrupted', patch_completed_at=CURRENT_TIMESTAMP,
+                       updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                (row["id"],),
+            )
+            db.execute(
+                """INSERT INTO patch_history(
+                       relative_path, subtitle_name, status, details, candidate_id
+                   ) VALUES (?, ?, 'interrupted', ?, ?)""",
+                (row["media_relative_path"], row["file_name"],
+                 json.dumps(details), row["id"]),
+            )
+        return len(rows)

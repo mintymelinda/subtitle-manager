@@ -1,4 +1,4 @@
-"""Transactional MKV subtitle injection. Never call without explicit per-file approval."""
+"""Transactional MKV subtitle injection with same-directory recovery."""
 import json
 import os
 import shutil
@@ -32,29 +32,98 @@ def _english(stream: dict) -> bool:
     return language in {"en", "eng", "english"}
 
 
-def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool = True) -> dict:
-    """Mux an approved subtitle into an MKV without transcoding.
+def _validate_streams(before: dict, after: dict) -> None:
+    output_format = (after.get("format") or {}).get("format_name", "").lower()
+    if "matroska" not in output_format:
+        raise RuntimeError("Validation failed: output is not a Matroska container")
+    before_streams = before.get("streams", [])
+    after_streams = after.get("streams", [])
+    before_av = [_signature(s) for s in before_streams if s.get("codec_type") in {"video", "audio"}]
+    after_av = [_signature(s) for s in after_streams if s.get("codec_type") in {"video", "audio"}]
+    if after_av != before_av:
+        raise RuntimeError("Validation failed: existing video/audio streams changed")
 
-    A same-directory recovery copy is retained until the replacement is verified.
-    In test mode the recovery copy is kept after success for manual inspection.
-    """
+    before_subs = [_signature(s) for s in before_streams if s.get("codec_type") == "subtitle"]
+    after_subs = [s for s in after_streams if s.get("codec_type") == "subtitle"]
+    if len(after_subs) < len(before_subs) + 1:
+        raise RuntimeError("Validation failed: the new subtitle stream is missing")
+
+    remaining = list(after_subs)
+    for old_signature in before_subs:
+        match = next((i for i, stream in enumerate(remaining)
+                      if _signature(stream) == old_signature), None)
+        if match is None:
+            raise RuntimeError("Validation failed: an existing subtitle stream was lost")
+        remaining.pop(match)
+    if not any(_english(stream) for stream in remaining):
+        raise RuntimeError("Validation failed: the added subtitle is not tagged English")
+
+
+def _snapshot(path: Path) -> tuple:
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+
+def _preserve_metadata(source: Path, working: Path) -> None:
+    shutil.copystat(source, working, follow_symlinks=False)
+    source_stat = source.stat()
+    try:
+        os.chown(working, source_stat.st_uid, source_stat.st_gid)
+    except PermissionError:
+        # Non-root containers cannot change ownership; mode/times/xattrs remain copied.
+        pass
+
+
+def _fsync_directory(directory: Path) -> None:
+    try:
+        descriptor = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError:
+        pass
+
+
+def _restore_from_backup(backup: Path, source: Path) -> None:
+    descriptor, rollback_name = tempfile.mkstemp(
+        prefix=f".{source.stem}.", suffix=".rollback.mkv", dir=str(source.parent)
+    )
+    os.close(descriptor)
+    rollback = Path(rollback_name)
+    try:
+        shutil.copy2(backup, rollback)
+        os.replace(rollback, source)
+        _fsync_directory(source.parent)
+    finally:
+        rollback.unlink(missing_ok=True)
+
+
+def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool = True, expected_size: int | None = None, expected_mtime: float | None = None) -> dict:
+    """Patch one explicitly approved MKV. Test mode always retains the recovery copy."""
     if approved is not True:
         raise PermissionError("Explicit approval for this media file is required")
+
     source = source.resolve(strict=True)
     subtitle = subtitle.resolve(strict=True)
     if source.suffix.lower() != ".mkv":
         raise ValueError("Only MKV containers are supported in this release")
     if subtitle.suffix.lower() not in SUBTITLE_EXTENSIONS or not subtitle.is_file():
         raise ValueError("Unsupported or missing subtitle file")
-    if not source.is_file():
-        raise ValueError("Source media file does not exist")
-    if source == subtitle:
-        raise ValueError("Subtitle file cannot be the media file")
-
+    if not source.is_file() or source == subtitle:
+        raise ValueError("Source media file is invalid")
+    original_snapshot = _snapshot(source)
+    current_stat = source.stat()
+    if expected_size is not None and current_stat.st_size != expected_size:
+        raise RuntimeError("Approved media file size no longer matches the reviewed version")
+    if expected_mtime is not None and current_stat.st_mtime != expected_mtime:
+        raise RuntimeError("Approved media modification time no longer matches the reviewed version")
     before = _probe(source)
-    before_streams = before.get("streams", [])
-    before_av = [_signature(s) for s in before_streams if s.get("codec_type") in {"video", "audio"}]
-    before_subs = [_signature(s) for s in before_streams if s.get("codec_type") == "subtitle"]
+    source_format = (before.get("format") or {}).get("format_name", "").lower()
+    if "matroska" not in source_format:
+        raise ValueError("Source file is not a valid Matroska container")
+    if not any(s.get("codec_type") == "video" for s in before.get("streams", [])):
+        raise ValueError("Source MKV does not contain a video stream")
 
     token = uuid.uuid4().hex
     backup = source.with_name(f".{source.name}.recovery-{token}.bak")
@@ -68,6 +137,8 @@ def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool =
 
     try:
         shutil.copy2(source, backup)
+        if _snapshot(source) != original_snapshot:
+            raise RuntimeError("Source media changed while the recovery copy was being created")
         command = [
             "mkvmerge", "-o", str(working), str(source),
             "--language", "0:eng", str(subtitle)
@@ -77,45 +148,38 @@ def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool =
             raise RuntimeError("MKVToolNix did not produce a valid working file")
 
         candidate = _probe(working)
-        candidate_streams = candidate.get("streams", [])
-        after_av = [_signature(s) for s in candidate_streams if s.get("codec_type") in {"video", "audio"}]
-        after_subs = [s for s in candidate_streams if s.get("codec_type") == "subtitle"]
-        if after_av != before_av:
-            raise RuntimeError("Validation failed: existing video/audio streams changed")
-        if len(after_subs) < len(before_subs) + 1:
-            raise RuntimeError("Validation failed: the new subtitle stream is missing")
-        # Existing subtitle tracks must remain represented in the output.
-        remaining = list(after_subs)
-        for old_sig in before_subs:
-            match = next((i for i, stream in enumerate(remaining) if _signature(stream) == old_sig), None)
-            if match is None:
-                raise RuntimeError("Validation failed: an existing subtitle stream was lost")
-            remaining.pop(match)
-        if not any(_english(stream) for stream in remaining):
-            raise RuntimeError("Validation failed: new subtitle is not tagged English")
-
-        # Ensure file data is flushed before the atomic same-filesystem replacement.
+        _validate_streams(before, candidate)
         with working.open("rb") as handle:
             os.fsync(handle.fileno())
+        _preserve_metadata(source, working)
+
+        # Refuse to replace a file changed by another process during muxing.
+        if _snapshot(source) != original_snapshot:
+            raise RuntimeError("Source media changed during subtitle injection; original left untouched")
+
         os.replace(working, source)
         replaced = True
+        _fsync_directory(source.parent)
 
         try:
             final = _probe(source)
-            final_streams = final.get("streams", [])
-            final_av = [_signature(s) for s in final_streams if s.get("codec_type") in {"video", "audio"}]
-            final_subs = [s for s in final_streams if s.get("codec_type") == "subtitle"]
-            if final_av != before_av or len(final_subs) < len(before_subs) + 1:
-                raise RuntimeError("Post-replacement verification failed")
-            if not any(_english(s) for s in final_subs):
-                raise RuntimeError("Post-replacement English subtitle verification failed")
+            _validate_streams(before, final)
+            final_stat = source.stat()
+            original_stat = backup.stat()
+            if final_stat.st_mode & 0o7777 != original_stat.st_mode & 0o7777:
+                raise RuntimeError("Post-replacement verification failed: file permissions changed")
+            if final_stat.st_mtime_ns != original_stat.st_mtime_ns:
+                raise RuntimeError("Post-replacement verification failed: modification timestamp changed")
         except Exception:
-            os.replace(backup, source)
+            _restore_from_backup(backup, source)
             replaced = False
+            _fsync_directory(source.parent)
             raise
 
         if not test_mode:
             backup.unlink(missing_ok=True)
+            _fsync_directory(source.parent)
+
         return {
             "status": "patched",
             "source": str(source),
@@ -123,11 +187,12 @@ def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool =
             "test_mode": test_mode,
             "video_audio_streams_preserved": True,
             "existing_subtitles_preserved": True,
-            "english_subtitle_added": True
+            "english_subtitle_added": True,
+            "metadata_preserved": True,
         }
     except Exception:
         if replaced and backup.exists():
-            os.replace(backup, source)
+            _restore_from_backup(backup, source)
         raise
     finally:
         working.unlink(missing_ok=True)
