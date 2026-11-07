@@ -313,6 +313,7 @@ def _run_injection_job(job_id: int, candidate_id: int, row: dict,
         logger.info("injection_completed", extra={"event":"injection_completed","job_id":job_id,
                     "candidate_id":candidate_id,"media_path":row["media_relative_path"],
                     "phase":"verified","status":"patched"})
+        return result
     except Exception as exc:
         backups = set(source.parent.glob(pattern)) - before
         backup = str(max(backups, key=lambda p:p.stat().st_mtime_ns)) if backups else None
@@ -330,10 +331,11 @@ def _run_injection_job(job_id: int, candidate_id: int, row: dict,
         logger.exception("injection_failed", extra={"event":"injection_failed","job_id":job_id,
                          "candidate_id":candidate_id,"media_path":row["media_relative_path"],
                          "phase":"injection","error_type":type(exc).__name__})
+        return None
 
 
 @app.post("/api/candidates/{candidate_id}/inject")
-def inject_candidate(candidate_id: int, request: InjectRequest, background_tasks: BackgroundTasks):
+def inject_candidate(candidate_id: int, request: InjectRequest, background_tasks: BackgroundTasks | None = None):
     if request.confirm is not True:
         raise HTTPException(status_code=400, detail="Explicit confirmation is required for media modification.")
     row = get_candidate(candidate_id)
@@ -398,6 +400,12 @@ def inject_candidate(candidate_id: int, request: InjectRequest, background_tasks
     record_job_item(job["id"], media_path=row["media_relative_path"], status="running",
                     phase="queued", candidate_id=candidate_id, review_decision="approved",
                     patch_status="running")
+    if background_tasks is None:
+        result = _run_injection_job(job["id"], candidate_id, row, source, subtitle)
+        if result is None:
+            raise HTTPException(status_code=500, detail="Subtitle injection failed. Inspect job history and retained recovery files.")
+        return {"candidate_id":candidate_id,"media":row["media_relative_path"],
+                "test_mode":settings.test_mode,**result}
     background_tasks.add_task(_run_injection_job, job["id"], candidate_id, row, source, subtitle)
     logger.info("injection_queued", extra={"event":"injection_queued","job_id":job["id"],
                 "candidate_id":candidate_id,"media_path":row["media_relative_path"],"phase":"queued"})
