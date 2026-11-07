@@ -243,3 +243,18 @@ def set_candidate_decision(candidate_id: int, decision: str) -> dict | None:
             (candidate_id,),
         ).fetchone()
         return dict(updated)
+
+
+
+def list_media_files() -> list[dict]:
+    with connect() as db:
+        rows = db.execute(
+            "SELECT relative_path, size, modified_at, has_verified_english_subtitle, inspection_json, last_scanned_at FROM media_files ORDER BY relative_path"
+        ).fetchall()
+    results = []
+    for row in rows:
+        item = dict(row)
+        item["has_verified_english_subtitle"] = bool(item["has_verified_english_subtitle"])
+        item["inspection"] = json.loads(item.pop("inspection_json") or "{}")
+        results.append(item)
+    return results
