@@ -5,12 +5,12 @@ import uuid
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse, PlainTextResponse
 
 from app.config import settings
 from app.database import (
     initialize, record_scan, save_candidate, mark_candidate_staged,
-    mark_candidate_error,
+    mark_candidate_error, list_candidates, set_candidate_decision,
 )
 from app.media import inspect_media
 from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError, assess_subtitle_payload
@@ -21,6 +21,10 @@ app = FastAPI(title=settings.app_name)
 
 class ScanRequest(BaseModel):
     path: str = "/media"
+
+
+class CandidateDecisionRequest(BaseModel):
+    decision: str
 
 
 @app.on_event("startup")
@@ -194,7 +198,7 @@ def scan(request: ScanRequest):
             stat_result = path.stat()
             relative_path = str(path.relative_to(root))
             media_relative_path = str(path.relative_to(media_root))
-            record_scan(media_relative_path, stat_result.st_size, stat_result.st_mtime)
+            record_scan(media_relative_path, stat_result.st_size, stat_result.st_mtime, details)
             candidate_summary = {"status": "not_configured", "found": 0, "staged": 0, "candidates": []}
             if details["has_verified_english_subtitle"]:
                 candidate_summary["status"] = "verified_english_present"
