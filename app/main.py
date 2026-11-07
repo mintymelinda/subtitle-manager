@@ -325,22 +325,30 @@ def inject_candidate(candidate_id: int, request: InjectRequest):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if claimed is None:
         raise HTTPException(status_code=404, detail="Candidate not found.")
+    recovery_pattern = f".{source.name}.recovery-*.bak"
+    recoveries_before = set(source.parent.glob(recovery_pattern))
     try:
         result = patch_mkv(source, subtitle, approved=True, test_mode=settings.test_mode)
-        finish_candidate_patch(candidate_id, "patched", result, result.get("backup"))
-        return {
-            "candidate_id": candidate_id,
-            "media": row["media_relative_path"],
-            "test_mode": settings.test_mode,
-            **result,
-        }
     except Exception as exc:
+        recovery_files = set(source.parent.glob(recovery_pattern)) - recoveries_before
+        recovery_path = str(max(recovery_files, key=lambda p: p.stat().st_mtime_ns)) if recovery_files else None
         safe_error = f"{type(exc).__name__}: {str(exc)[:400]}"
         try:
-            finish_candidate_patch(candidate_id, "failed", {"error": safe_error})
+            finish_candidate_patch(
+                candidate_id, "failed",
+                {"error": safe_error, "recovery_path": recovery_path}, recovery_path,
+            )
         except Exception:
             pass
-        raise HTTPException(status_code=500, detail="Subtitle injection failed. The original was preserved or restored where possible; inspect recovery files and application logs.") from exc
+        raise HTTPException(status_code=500, detail="Subtitle injection failed. The original was preserved or restored where possible; inspect the retained recovery file and application logs.") from exc
+
+    finish_candidate_patch(candidate_id, "patched", result, result.get("backup"))
+    return {
+        "candidate_id": candidate_id,
+        "media": row["media_relative_path"],
+        "test_mode": settings.test_mode,
+        **result,
+    }
 
 
 @app.post("/api/scan")
