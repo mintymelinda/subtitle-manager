@@ -12,7 +12,7 @@ from app.database import (
     mark_candidate_error,
 )
 from app.media import inspect_media
-from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError
+from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError, assess_subtitle_payload
 from app.scanner import scan_media
 
 app = FastAPI(title=settings.app_name)
@@ -56,6 +56,23 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
             else:
                 try:
                     file_name, payload, remaining = client.download(candidate["file_id"])
+                    assessment = assess_subtitle_payload(file_name, payload)
+                    if assessment['content_status'] == 'other':
+                        mark_candidate_error(row['id'], 'Downloaded subtitle content does not appear to be English.')
+                        status = 'content_not_english'
+                        summary['candidates'].append({
+                            'id': row['id'], 'subtitle_id': candidate['subtitle_id'],
+                            'file_id': candidate['file_id'], 'file_name': candidate['file_name'],
+                            'language': candidate['language'], 'format': candidate['format'],
+                            'release': candidate['release'], 'moviehash_match': candidate['moviehash_match'],
+                            'download_count': candidate['download_count'], 'trusted_uploader': candidate['trusted_uploader'],
+                            'hearing_impaired': candidate['hearing_impaired'], 'ai_translated': candidate['ai_translated'],
+                            'match_score': candidate['match_score'], 'match_reasons': candidate['match_reasons'],
+                            'content_status': assessment['content_status'],
+                            'content_language': assessment['content_language'],
+                            'content_confidence': assessment['content_confidence'], 'status': status,
+                        })
+                        continue
                     staging_root.mkdir(parents=True, exist_ok=True)
                     extension = Path(file_name).suffix.lower()
                     target = staging_root / f"candidate-{row['id']}{extension}"
