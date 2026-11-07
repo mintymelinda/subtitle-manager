@@ -66,8 +66,9 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                         mark_candidate_error(
                             row["id"],
                             "Downloaded subtitle content does not appear to be English.",
+                            status="rejected_non_english",
                         )
-                        status = "content_not_english"
+                        status = "rejected_non_english"
                     else:
                         staging_root.mkdir(parents=True, exist_ok=True)
                         extension = Path(file_name).suffix.lower()
