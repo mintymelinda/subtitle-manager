@@ -60,6 +60,9 @@ def initialize():
             staged_path TEXT,
             review_decision TEXT NOT NULL DEFAULT 'pending',
             review_updated_at TEXT,
+            patch_status TEXT NOT NULL DEFAULT 'not_started',
+            patch_started_at TEXT,
+            patch_completed_at TEXT,
             provider_download_remaining INTEGER,
             last_error TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -77,6 +80,17 @@ def initialize():
             db.execute("ALTER TABLE subtitle_candidates ADD COLUMN review_decision TEXT NOT NULL DEFAULT 'pending'")
         if "review_updated_at" not in candidate_columns:
             db.execute("ALTER TABLE subtitle_candidates ADD COLUMN review_updated_at TEXT")
+        if "patch_status" not in candidate_columns:
+            db.execute("ALTER TABLE subtitle_candidates ADD COLUMN patch_status TEXT NOT NULL DEFAULT 'not_started'")
+        if "patch_started_at" not in candidate_columns:
+            db.execute("ALTER TABLE subtitle_candidates ADD COLUMN patch_started_at TEXT")
+        if "patch_completed_at" not in candidate_columns:
+            db.execute("ALTER TABLE subtitle_candidates ADD COLUMN patch_completed_at TEXT")
+        history_columns = {row[1] for row in db.execute("PRAGMA table_info(patch_history)")}
+        if "candidate_id" not in history_columns:
+            db.execute("ALTER TABLE patch_history ADD COLUMN candidate_id INTEGER")
+        if "backup_path" not in history_columns:
+            db.execute("ALTER TABLE patch_history ADD COLUMN backup_path TEXT")
         db.executescript("""
         CREATE INDEX IF NOT EXISTS idx_subtitle_candidates_media
             ON subtitle_candidates(media_relative_path);
