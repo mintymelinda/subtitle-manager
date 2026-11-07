@@ -324,7 +324,7 @@ def inject_candidate(candidate_id: int, request: InjectRequest):
     if Path(row["file_name"]).suffix.lower() != subtitle.suffix.lower():
         raise HTTPException(status_code=409, detail="Staged subtitle format does not match the reviewed candidate.")
     try:
-        claimed = claim_candidate_patch(candidate_id)
+        claimed = claim_candidate_patch(candidate_id, test_mode=settings.test_mode)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if claimed is None:
