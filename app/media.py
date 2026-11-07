@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 
 from langdetect import DetectorFactory, detect_langs
+from langdetect.lang_detect_exception import LangDetectException
 
 DetectorFactory.seed = 0
 TEXT_SUBTITLE_CODECS = {"subrip", "ass", "ssa", "mov_text", "webvtt", "text"}
@@ -35,7 +36,7 @@ def _subtitle_content_language(path: Path, stream_index: int, codec: str) -> dic
             "language": language,
             "confidence": confidence
         }
-    except (subprocess.SubprocessError, OSError, ValueError, IndexError):
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError, LangDetectException):
         return {"status": "unknown", "language": None, "confidence": None}
 
 
