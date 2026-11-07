@@ -1,12 +1,18 @@
 from pathlib import Path
+import os
 import subprocess
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse
 
 from app.config import settings
-from app.database import initialize, record_scan
+from app.database import (
+    initialize, record_scan, save_candidate, mark_candidate_staged,
+    mark_candidate_error,
+)
 from app.media import inspect_media
+from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError
 from app.scanner import scan_media
 
 app = FastAPI(title=settings.app_name)
@@ -28,6 +34,67 @@ def media_path_is_safe(path: Path, root: Path) -> bool:
         return False
 
 
+def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
+                     stat_result, metadata: dict) -> dict:
+    """Search and stage the top candidates outside the media mount."""
+    relative_media_path = str(path.relative_to(media_root))
+    staging_root = Path(settings.subtitle_staging_path).resolve()
+    if staging_root == media_root or staging_root.is_relative_to(media_root):
+        raise OpenSubtitlesError("Subtitle staging directory must be outside the media library.")
+    candidates = client.search(path, metadata)
+    summary = {"status": "no_candidates" if not candidates else "complete",
+               "found": len(candidates), "staged": 0, "candidates": []}
+    limit = max(0, min(5, int(settings.open_subtitles_max_candidates_per_file)))
+    for candidate in candidates[:limit]:
+        row = save_candidate(
+            relative_media_path, stat_result.st_size, stat_result.st_mtime, candidate
+        )
+        status = row["status"]
+        if status != "staged":
+            if client.remaining_downloads == 0:
+                status = "download_quota_reached"
+            else:
+                try:
+                    file_name, payload, remaining = client.download(candidate["file_id"])
+                    staging_root.mkdir(parents=True, exist_ok=True)
+                    extension = Path(file_name).suffix.lower()
+                    target = staging_root / f"candidate-{row['id']}{extension}"
+                    temporary = target.with_name(target.name + ".part")
+                    with temporary.open("wb") as staged_file:
+                        staged_file.write(payload)
+                        staged_file.flush()
+                        os.fsync(staged_file.fileno())
+                    os.replace(temporary, target)
+                    mark_candidate_staged(row["id"], str(target), remaining)
+                    status = "staged"
+                except OpenSubtitlesError as exc:
+                    mark_candidate_error(row["id"], str(exc))
+                    status = "download_failed"
+                except OSError:
+                    mark_candidate_error(row["id"], "Could not write the staged subtitle file.")
+                    status = "download_failed"
+        if status == "staged":
+            summary["staged"] += 1
+        summary["candidates"].append({
+            "id": row["id"],
+            "subtitle_id": candidate["subtitle_id"],
+            "file_id": candidate["file_id"],
+            "file_name": candidate["file_name"],
+            "language": candidate["language"],
+            "format": candidate["format"],
+            "release": candidate["release"],
+            "moviehash_match": candidate["moviehash_match"],
+            "download_count": candidate["download_count"],
+            "trusted_uploader": candidate["trusted_uploader"],
+            "hearing_impaired": candidate["hearing_impaired"],
+            "ai_translated": candidate["ai_translated"],
+            "match_score": candidate["match_score"],
+            "match_reasons": candidate["match_reasons"],
+            "status": status,
+        })
+    return summary
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return HTMLResponse("""<!doctype html>
@@ -40,8 +107,8 @@ button:disabled{opacity:.5;cursor:not-allowed}pre{white-space:pre-wrap;overflow-
 .notice{border-left:4px solid #eab308;padding:.7rem 1rem;background:#292524}
 </style></head><body><h1>Subtitle Manager</h1>
 <p>Find missing English subtitles and review candidates before changing media.</p>
-<div class="notice"><strong>Safety:</strong> scanning never changes media. Every patch requires explicit per-file approval.
-Test mode is enabled by default and is limited to one approved file.</div>
+<div class="notice"><strong>Safety:</strong> scanning and subtitle downloads never change media files.
+Every media patch requires explicit per-file approval.</div>
 <section class="panel"><h2>Media scan</h2><label for="scan-path">Folder to scan</label><br><input id="scan-path" type="text" value="/media" style="box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-radius:8px;border:1px solid #64748b;background:#111827;color:#e5e7eb"><p id="root">Mounted media is available under /media. Enter a folder within that mount.</p>
 <button id="scan">Start scan</button><p id="status">Ready.</p><pre id="results"></pre></section>
 <script>
@@ -60,7 +127,12 @@ def health():
 
 @app.get("/api/config")
 def config():
-    return {"media_root": settings.media_root, "test_mode": settings.test_mode}
+    return {
+        "media_root": settings.media_root,
+        "test_mode": settings.test_mode,
+        "opensubtitles_configured": bool(settings.open_subtitles_api_key.strip()),
+        "candidate_staging_enabled": bool(settings.open_subtitles_api_key.strip()),
+    }
 
 
 @app.post("/api/scan")
@@ -85,15 +157,37 @@ def scan(request: ScanRequest):
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    client = None
+    if settings.open_subtitles_api_key.strip():
+        client = OpenSubtitlesClient(
+            settings.open_subtitles_api_key,
+            settings.open_subtitles_username,
+            settings.open_subtitles_password,
+        )
+
     inspected = []
     for path in paths:
         if not media_path_is_safe(path, root):
             continue
         try:
             details = inspect_media(path)
-            stat = path.stat()
-            relative_path = str(path.relative_to(root.resolve()))
-            record_scan(relative_path, stat.st_size, stat.st_mtime)
+            stat_result = path.stat()
+            relative_path = str(path.relative_to(root))
+            media_relative_path = str(path.relative_to(media_root))
+            record_scan(media_relative_path, stat_result.st_size, stat_result.st_mtime)
+            candidate_summary = {"status": "not_configured", "found": 0, "staged": 0, "candidates": []}
+            if details["has_verified_english_subtitle"]:
+                candidate_summary["status"] = "verified_english_present"
+            elif client is not None:
+                try:
+                    candidate_summary = stage_candidates(
+                        client, path, media_root, stat_result, details.get("metadata") or {}
+                    )
+                except OpenSubtitlesError as exc:
+                    candidate_summary = {
+                        "status": "provider_error", "found": 0, "staged": 0,
+                        "candidates": [], "error": str(exc)
+                    }
             inspected.append({
                 "path": relative_path,
                 "size": details["size"],
@@ -101,10 +195,17 @@ def scan(request: ScanRequest):
                 "video_streams": details["video_streams"],
                 "audio_streams": details["audio_streams"],
                 "subtitle_streams": details["subtitle_streams"],
+                "metadata": details.get("metadata", {}),
                 "has_verified_english_subtitle": details["has_verified_english_subtitle"],
                 "subtitle_content_assessment": details["subtitle_content_assessment"],
-                "needs_review": not details["has_verified_english_subtitle"]
+                "needs_review": not details["has_verified_english_subtitle"],
+                "subtitle_candidates": candidate_summary,
             })
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
-            inspected.append({"path": str(path.relative_to(root.resolve())), "error": str(exc)})
-    return {"files": inspected, "count": len(inspected), "test_mode": settings.test_mode}
+            inspected.append({"path": str(path.relative_to(root)), "error": str(exc)})
+    return {
+        "files": inspected,
+        "count": len(inspected),
+        "test_mode": settings.test_mode,
+        "opensubtitles_configured": client is not None,
+    }
