@@ -395,6 +395,9 @@ def inject_candidate(candidate_id: int, request: InjectRequest, background_tasks
         raise HTTPException(status_code=404, detail="Candidate not found.")
     job = create_job("inject", total=1, metadata={"candidate_id":candidate_id,
                       "test_mode":bool(settings.test_mode)})
+    record_job_item(job["id"], media_path=row["media_relative_path"], status="running",
+                    phase="queued", candidate_id=candidate_id, review_decision="approved",
+                    patch_status="running")
     background_tasks.add_task(_run_injection_job, job["id"], candidate_id, row, source, subtitle)
     logger.info("injection_queued", extra={"event":"injection_queued","job_id":job["id"],
                 "candidate_id":candidate_id,"media_path":row["media_relative_path"],"phase":"queued"})
@@ -418,6 +421,7 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path]):
             relative_path = str(path.relative_to(root))
             media_relative_path = str(path.relative_to(Path(settings.media_root).resolve()))
             update_job_progress(job_id, phase="inspecting", current_file=media_relative_path)
+            record_job_item(job_id, media_path=media_relative_path, status="running", phase="inspecting")
             try:
                 details = inspect_media(path)
                 stat_result = path.stat()
