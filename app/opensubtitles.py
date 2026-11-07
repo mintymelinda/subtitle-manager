@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import json
 import re
+
+from langdetect import DetectorFactory, detect_langs
+from langdetect.lang_detect_exception import LangDetectException
 import struct
 import time
 import urllib.error
@@ -22,6 +25,7 @@ USER_AGENT = "SubtitleManager v0.1.0"
 HASH_CHUNK_SIZE = 64 * 1024
 SUPPORTED_EXTENSIONS = {".srt", ".ass", ".ssa", ".sup"}
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+DetectorFactory.seed = 0
 
 
 class OpenSubtitlesError(RuntimeError):
@@ -78,6 +82,37 @@ def rank_candidate(attributes: dict[str, Any], media_name: str) -> tuple[int, li
     if attributes.get("hearing_impaired"):
         reasons.append("Hearing-impaired subtitle")
     return max(0, min(110, score)), reasons
+
+
+def assess_subtitle_payload(file_name: str, payload: bytes) -> dict[str, Any]:
+    """Check readable subtitle text; bitmap subtitles remain explicitly unknown."""
+    extension = Path(file_name).suffix.lower()
+    if extension == ".sup":
+        return {"content_status": "unknown", "content_language": None, "content_confidence": None}
+    try:
+        text = payload.decode("utf-8-sig", errors="replace")
+        text = re.sub(r"\\{[^}]*\\}", " ", text)
+        text = re.sub(r"(?m)^\\s*\\d+\\s*$", " ", text)
+        text = re.sub(r"(?m)^.*\\d{2}:\\d{2}:\\d{2}[,.]\\d+\\s*-->.*$", " ", text)
+        text = text.replace(r"\\N", " ").replace(r"\\n", " ")
+        text = re.sub(r"<[^>]+>", " ", text)
+        sample = " ".join(text.split())[:12000]
+        if len(sample) < 60:
+            return {"content_status": "unknown", "content_language": None, "content_confidence": None}
+        prediction = detect_langs(sample)[0]
+        language = prediction.lang
+        confidence = float(prediction.prob)
+        if confidence < 0.80:
+            status = "unknown"
+        else:
+            status = "english" if language == "en" else "other"
+        return {
+            "content_status": status,
+            "content_language": language,
+            "content_confidence": confidence,
+        }
+    except (UnicodeError, LangDetectException, IndexError, ValueError):
+        return {"content_status": "unknown", "content_language": None, "content_confidence": None}
 
 
 class OpenSubtitlesClient:
