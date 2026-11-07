@@ -33,6 +33,9 @@ def _english(stream: dict) -> bool:
 
 
 def _validate_streams(before: dict, after: dict) -> None:
+    output_format = (after.get("format") or {}).get("format_name", "").lower()
+    if "matroska" not in output_format:
+        raise RuntimeError("Validation failed: output is not a Matroska container")
     before_streams = before.get("streams", [])
     after_streams = after.get("streams", [])
     before_av = [_signature(s) for s in before_streams if s.get("codec_type") in {"video", "audio"}]
@@ -111,6 +114,9 @@ def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool =
         raise ValueError("Source media file is invalid")
     original_snapshot = _snapshot(source)
     before = _probe(source)
+    source_format = (before.get("format") or {}).get("format_name", "").lower()
+    if "matroska" not in source_format:
+        raise ValueError("Source file is not a valid Matroska container")
     if not any(s.get("codec_type") == "video" for s in before.get("streams", [])):
         raise ValueError("Source MKV does not contain a video stream")
 
