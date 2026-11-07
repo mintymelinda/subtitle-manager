@@ -415,7 +415,7 @@ def recover_interrupted_patches() -> int:
 
 
 def create_job(kind: str, total: int = 0, metadata: dict | None = None) -> dict:
-    if kind not in {"scan", "inject"}:
+    if kind not in {"scan", "inject", "review"}:
         raise ValueError("Unsupported job type.")
     with connect() as db:
         cursor = db.execute(
