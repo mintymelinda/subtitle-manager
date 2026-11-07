@@ -38,6 +38,14 @@ class InjectRequest(BaseModel):
     confirm: bool = False
 
 
+class OpenSubtitlesSettingsRequest(BaseModel):
+    api_key: str = ""
+    username: str = ""
+    password: str = ""
+    max_candidates_per_file: int = 2
+    clear_account_credentials: bool = False
+
+
 @app.on_event("startup")
 def startup():
     configure_logging()
