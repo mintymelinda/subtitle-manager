@@ -301,6 +301,17 @@ class OpenSubtitlesClient:
             raise OpenSubtitlesError("Downloaded file is not a supported subtitle format.")
         if not payload or payload.lstrip().lower().startswith((b"<!doctype html", b"<html")):
             raise OpenSubtitlesError("Downloaded content is not a subtitle file.")
+        if extension == ".srt" and not re.search(
+            rb"[0-9]{2}:[0-9]{2}:[0-9]{2}[,.][0-9]{3} *--> *[0-9]{2}:[0-9]{2}:[0-9]{2}",
+            payload,
+        ):
+            raise OpenSubtitlesError("Downloaded SRT file does not contain valid subtitle timing.")
+        if extension in {".ass", ".ssa"}:
+            text_payload = payload[:2 * 1024 * 1024].decode("utf-8-sig", errors="replace")
+            if "[Events]" not in text_payload or "Dialogue:" not in text_payload:
+                raise OpenSubtitlesError("Downloaded ASS/SSA file does not contain subtitle events.")
+        if extension == ".sup" and len(payload) < 100:
+            raise OpenSubtitlesError("Downloaded bitmap subtitle file is unexpectedly small.")
         remaining = result.get("remaining")
         self.remaining_downloads = int(remaining) if remaining is not None else None
         return suggested_name, payload, self.remaining_downloads
