@@ -82,6 +82,20 @@ def _fsync_directory(directory: Path) -> None:
         pass
 
 
+def _restore_from_backup(backup: Path, source: Path) -> None:
+    descriptor, rollback_name = tempfile.mkstemp(
+        prefix=f".{source.stem}.", suffix=".rollback.mkv", dir=str(source.parent)
+    )
+    os.close(descriptor)
+    rollback = Path(rollback_name)
+    try:
+        shutil.copy2(backup, rollback)
+        os.replace(rollback, source)
+        _fsync_directory(source.parent)
+    finally:
+        rollback.unlink(missing_ok=True)
+
+
 def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool = True) -> dict:
     """Patch one explicitly approved MKV. Test mode always retains the recovery copy."""
     if approved is not True:
@@ -148,7 +162,7 @@ def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool =
             if final_stat.st_mode & 0o7777 != original_stat.st_mode & 0o7777:
                 raise RuntimeError("Post-replacement verification failed: file permissions changed")
         except Exception:
-            os.replace(backup, source)
+            _restore_from_backup(backup, source)
             replaced = False
             _fsync_directory(source.parent)
             raise
@@ -169,8 +183,7 @@ def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool =
         }
     except Exception:
         if replaced and backup.exists():
-            os.replace(backup, source)
-            _fsync_directory(source.parent)
+            _restore_from_backup(backup, source)
         raise
     finally:
         working.unlink(missing_ok=True)
