@@ -26,8 +26,8 @@ class TransactionalPatcherTests(unittest.TestCase):
         self.source.write_bytes(self.original)
         self.subtitle.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello there, this is a subtitle.\n", encoding="utf-8")
         os.chmod(self.source, 0o640)
-        self.before = {"streams": [stream("video", "h264"), stream("audio", "aac")]}
-        self.valid_after = {"streams": [
+        self.before = {"format": {"format_name": "matroska"}, "streams": [stream("video", "h264"), stream("audio", "aac")]}
+        self.valid_after = {"format": {"format_name": "matroska"}, "streams": [
             stream("video", "h264"), stream("audio", "aac"), stream("subtitle", "subrip", "eng")
         ]}
 
@@ -60,7 +60,7 @@ class TransactionalPatcherTests(unittest.TestCase):
         self.assertNotEqual(self.source.read_bytes(), self.original)
 
     def test_pre_replacement_validation_failure_leaves_original_and_backup(self):
-        invalid = {"streams": [stream("video", "h264"), stream("audio", "aac")]}
+        invalid = {"format": {"format_name": "matroska"}, "streams": [stream("video", "h264"), stream("audio", "aac")]}
         with self.assertRaisesRegex(RuntimeError, "new subtitle stream is missing"):
             self.run_patch([self.before, invalid])
         self.assertEqual(self.source.read_bytes(), self.original)
@@ -69,7 +69,7 @@ class TransactionalPatcherTests(unittest.TestCase):
         self.assertEqual(backups[0].read_bytes(), self.original)
 
     def test_post_replacement_failure_rolls_back_and_retains_recovery_copy(self):
-        invalid_final = {"streams": [stream("video", "h264"), stream("audio", "aac")]}
+        invalid_final = {"format": {"format_name": "matroska"}, "streams": [stream("video", "h264"), stream("audio", "aac")]}
         with self.assertRaisesRegex(RuntimeError, "new subtitle stream is missing"):
             self.run_patch([self.before, self.valid_after, invalid_final])
         self.assertEqual(self.source.read_bytes(), self.original)
