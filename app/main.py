@@ -3,15 +3,19 @@ import os
 import subprocess
 import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse, FileResponse, PlainTextResponse
 
 from app.config import settings
+from app.observability import configure_logging, logger
+
 from app.database import (
     initialize, record_scan, save_candidate, mark_candidate_staged,
     mark_candidate_error, list_candidates, list_media_files, set_candidate_decision,
     get_candidate, claim_candidate_patch, finish_candidate_patch, recover_interrupted_patches,
+    create_job, start_job, update_job_progress, record_job_item, finish_job,
+    get_job, list_jobs, recover_interrupted_jobs,
 )
 from app.media import inspect_media
 from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError, assess_subtitle_payload
@@ -35,8 +39,11 @@ class InjectRequest(BaseModel):
 
 @app.on_event("startup")
 def startup():
+    configure_logging()
     initialize()
-    recover_interrupted_patches()
+    patches = recover_interrupted_patches()
+    jobs = recover_interrupted_jobs()
+    logger.warning("startup_recovery", extra={"event":"startup_recovery","status":"interrupted","error_type":f"patches={patches},jobs={jobs}"})
 
 
 def media_path_is_safe(path: Path, root: Path) -> bool:
