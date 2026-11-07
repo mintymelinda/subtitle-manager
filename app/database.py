@@ -107,8 +107,8 @@ def save_candidate(media_relative_path: str, media_size: int, media_modified_at:
                 ai_translated=excluded.ai_translated,
                 match_score=excluded.match_score,
                 match_reasons=excluded.match_reasons,
-                status=CASE WHEN subtitle_candidates.status='staged'
-                            THEN 'staged' ELSE 'discovered' END,
+                status=CASE WHEN subtitle_candidates.status IN ('staged', 'rejected_non_english')
+                            THEN subtitle_candidates.status ELSE 'discovered' END,
                 updated_at=CURRENT_TIMESTAMP
         """, (
             media_relative_path, media_size, media_modified_at,
@@ -145,10 +145,10 @@ def mark_candidate_staged(candidate_id: int, staged_path: str,
         ))
 
 
-def mark_candidate_error(candidate_id: int, error: str):
+def mark_candidate_error(candidate_id: int, error: str, status: str = 'download_failed'):
     with connect() as db:
         db.execute("""
             UPDATE subtitle_candidates
-            SET status='download_failed', last_error=?, updated_at=CURRENT_TIMESTAMP
-            WHERE id=? AND status!='staged'
-        """, (error[:500], candidate_id))
+            SET status=?, last_error=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND status NOT IN ('staged', 'rejected_non_english')
+        """, (status, error[:500], candidate_id))
