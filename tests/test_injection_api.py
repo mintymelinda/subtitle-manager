@@ -87,6 +87,42 @@ class InjectionApiSafetyTests(unittest.TestCase):
             self.assertEqual(error.exception.status_code, 409)
             patcher.assert_not_called()
 
+    def test_parent_traversal_media_path_is_rejected(self):
+        outside = self.root / "outside.mkv"
+        outside.write_bytes(b"outside")
+        stat = outside.stat()
+        record_scan("../outside.mkv", stat.st_size, stat.st_mtime, {})
+        row = save_candidate("../outside.mkv", stat.st_size, stat.st_mtime, {
+            "file_id": 1000, "file_name": "candidate.srt", "language": "en",
+            "format": "srt", "match_score": 90, "match_reasons": [],
+        })
+        mark_candidate_staged(row["id"], str(self.subtitle), 10, {"content_status": "english"})
+        set_candidate_decision(row["id"], "approved")
+        with patch("app.main.patch_mkv") as patcher:
+            with self.assertRaises(HTTPException) as error:
+                inject_candidate(row["id"], InjectRequest(confirm=True))
+            self.assertEqual(error.exception.status_code, 400)
+            patcher.assert_not_called()
+
+    def test_symlinked_media_file_is_rejected(self):
+        outside = self.root / "outside.mkv"
+        outside.write_bytes(b"outside media")
+        link = self.media_root / "linked.mkv"
+        link.symlink_to(outside)
+        stat = outside.stat()
+        record_scan("linked.mkv", stat.st_size, stat.st_mtime, {})
+        row = save_candidate("linked.mkv", stat.st_size, stat.st_mtime, {
+            "file_id": 1001, "file_name": "candidate.srt", "language": "en",
+            "format": "srt", "match_score": 90, "match_reasons": [],
+        })
+        mark_candidate_staged(row["id"], str(self.subtitle), 10, {"content_status": "english"})
+        set_candidate_decision(row["id"], "approved")
+        with patch("app.main.patch_mkv") as patcher:
+            with self.assertRaises(HTTPException) as error:
+                inject_candidate(row["id"], InjectRequest(confirm=True))
+            self.assertEqual(error.exception.status_code, 400)
+            patcher.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
