@@ -105,6 +105,22 @@ class InjectionApprovalDatabaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "was interrupted"):
             claim_candidate_patch(candidate_id)
 
+    def test_new_media_version_resets_previously_patched_candidate_state(self):
+        candidate_id = self.create_candidate()
+        set_candidate_decision(candidate_id, "approved")
+        claim_candidate_patch(candidate_id)
+        finish_candidate_patch(candidate_id, "patched", {"status": "patched"})
+        updated = self.size + 1
+        record_scan(self.path, updated, self.mtime + 1, {})
+        save_candidate(self.path, updated, self.mtime + 1, {
+            "file_id": 1234, "file_name": "test.srt", "language": "en",
+            "format": "srt", "release": "test", "moviehash_match": True,
+            "match_score": 100, "match_reasons": ["Exact hash match"],
+        })
+        row = get_candidate(candidate_id)
+        self.assertEqual(row["patch_status"], "not_started")
+        self.assertEqual(row["review_decision"], "pending")
+
 
 if __name__ == "__main__":
     unittest.main()
