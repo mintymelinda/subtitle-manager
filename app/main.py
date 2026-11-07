@@ -362,8 +362,66 @@ def inject_candidate(candidate_id: int, request: InjectRequest):
     }
 
 
+def _scan_worker(job_id: int, root: Path):
+    start_job(job_id)
+    try:
+        paths = list(scan_media(root))
+        update_job_progress(job_id, phase="inspecting", total=len(paths))
+        client = None
+        if settings.open_subtitles_api_key.strip():
+            client = OpenSubtitlesClient(settings.open_subtitles_api_key,
+                                         settings.open_subtitles_username,
+                                         settings.open_subtitles_password)
+        completed = succeeded = failed = 0
+        for path in paths:
+            if not media_path_is_safe(path, root):
+                continue
+            relative_path = str(path.relative_to(root))
+            media_relative_path = str(path.relative_to(Path(settings.media_root).resolve()))
+            update_job_progress(job_id, phase="inspecting", current_file=media_relative_path)
+            try:
+                details = inspect_media(path)
+                stat_result = path.stat()
+                record_scan(media_relative_path, stat_result.st_size, stat_result.st_mtime, details)
+                summary = {"status":"not_configured","found":0,"staged":0,"candidates":[]}
+                phase = "inspected"
+                if details["has_verified_english_subtitle"]:
+                    summary["status"] = "verified_english_present"
+                elif client is not None:
+                    phase = "discovery"
+                    update_job_progress(job_id, phase=phase, current_file=media_relative_path)
+                    try:
+                        summary = stage_candidates(client, path, Path(settings.media_root).resolve(),
+                                                   stat_result, details.get("metadata") or {})
+                    except OpenSubtitlesError as exc:
+                        summary = {"status":"provider_error","found":0,"staged":0,
+                                   "candidates":[],"error":str(exc)}
+                record_job_item(job_id, media_path=media_relative_path, status="completed",
+                                phase=phase, details={"candidate_status":summary["status"],
+                                "candidates_found":summary["found"],"candidates_staged":summary["staged"]})
+                succeeded += 1
+                logger.info("media_scan_completed", extra={"event":"media_scan_completed",
+                            "job_id":job_id,"media_path":media_relative_path,"phase":phase,"status":"completed"})
+            except (OSError, subprocess.SubprocessError, ValueError, OpenSubtitlesError) as exc:
+                record_job_item(job_id, media_path=media_relative_path, status="failed",
+                                phase="scan", error=f"{type(exc).__name__}: {str(exc)[:400]}")
+                failed += 1
+                logger.exception("media_scan_failed", extra={"event":"media_scan_failed",
+                                 "job_id":job_id,"media_path":media_relative_path,
+                                 "phase":"scan","error_type":type(exc).__name__})
+            completed += 1
+            update_job_progress(job_id, completed=completed, succeeded=succeeded, failed=failed)
+        finish_job(job_id, "completed", f"{failed} file(s) failed." if failed else None)
+        logger.info("scan_job_completed", extra={"event":"scan_job_completed",
+                    "job_id":job_id,"phase":"completed","status":"completed"})
+    except Exception as exc:
+        finish_job(job_id, "failed", f"{type(exc).__name__}: {str(exc)[:400]}")
+        logger.exception("scan_job_failed", extra={"event":"scan_job_failed","job_id":job_id,
+                         "phase":"scan","error_type":type(exc).__name__})
+
+
 @app.post("/api/scan")
-def scan(request: ScanRequest):
+def scan(request: ScanRequest, background_tasks: BackgroundTasks):
     media_root = Path(settings.media_root).resolve()
     requested = Path(request.path.strip() or "/media")
     if requested.is_absolute() and str(requested).startswith("/media/"):
@@ -383,56 +441,21 @@ def scan(request: ScanRequest):
         paths = list(scan_media(root))
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job = create_job("scan", total=len(paths), metadata={"scan_root":str(root)})
+    background_tasks.add_task(_scan_worker, job["id"], root)
+    logger.info("scan_job_queued", extra={"event":"scan_job_queued","job_id":job["id"],
+                "phase":"queued","status":"queued"})
+    return {"job_id":job["id"],"status":"queued","total":len(paths)}
 
-    client = None
-    if settings.open_subtitles_api_key.strip():
-        client = OpenSubtitlesClient(
-            settings.open_subtitles_api_key,
-            settings.open_subtitles_username,
-            settings.open_subtitles_password,
-        )
 
-    inspected = []
-    for path in paths:
-        if not media_path_is_safe(path, root):
-            continue
-        try:
-            details = inspect_media(path)
-            stat_result = path.stat()
-            relative_path = str(path.relative_to(root))
-            media_relative_path = str(path.relative_to(media_root))
-            record_scan(media_relative_path, stat_result.st_size, stat_result.st_mtime, details)
-            candidate_summary = {"status": "not_configured", "found": 0, "staged": 0, "candidates": []}
-            if details["has_verified_english_subtitle"]:
-                candidate_summary["status"] = "verified_english_present"
-            elif client is not None:
-                try:
-                    candidate_summary = stage_candidates(
-                        client, path, media_root, stat_result, details.get("metadata") or {}
-                    )
-                except OpenSubtitlesError as exc:
-                    candidate_summary = {
-                        "status": "provider_error", "found": 0, "staged": 0,
-                        "candidates": [], "error": str(exc)
-                    }
-            inspected.append({
-                "path": relative_path,
-                "size": details["size"],
-                "duration": details["duration"],
-                "video_streams": details["video_streams"],
-                "audio_streams": details["audio_streams"],
-                "subtitle_streams": details["subtitle_streams"],
-                "metadata": details.get("metadata", {}),
-                "has_verified_english_subtitle": details["has_verified_english_subtitle"],
-                "subtitle_content_assessment": details["subtitle_content_assessment"],
-                "needs_review": not details["has_verified_english_subtitle"],
-                "subtitle_candidates": candidate_summary,
-            })
-        except (OSError, subprocess.SubprocessError, ValueError) as exc:
-            inspected.append({"path": str(path.relative_to(root)), "error": str(exc)})
-    return {
-        "files": inspected,
-        "count": len(inspected),
-        "test_mode": settings.test_mode,
-        "opensubtitles_configured": client is not None,
-    }
+@app.get("/api/jobs")
+def jobs(limit: int = 25):
+    return {"jobs":list_jobs(limit)}
+
+
+@app.get("/api/jobs/{job_id}")
+def job_detail(job_id: int):
+    result = get_job(job_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return result
