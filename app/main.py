@@ -398,10 +398,9 @@ def inject_candidate(candidate_id: int, request: InjectRequest, background_tasks
             "test_mode":settings.test_mode}
 
 
-def _scan_worker(job_id: int, root: Path):
+def _scan_worker(job_id: int, root: Path, paths: list[Path]):
     start_job(job_id)
     try:
-        paths = list(scan_media(root))
         update_job_progress(job_id, phase="inspecting", total=len(paths))
         client = None
         if settings.open_subtitles_api_key.strip():
@@ -478,7 +477,7 @@ def scan(request: ScanRequest, background_tasks: BackgroundTasks):
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     job = create_job("scan", total=len(paths), metadata={"scan_root":str(root)})
-    background_tasks.add_task(_scan_worker, job["id"], root)
+    background_tasks.add_task(_scan_worker, job["id"], root, paths)
     logger.info("scan_job_queued", extra={"event":"scan_job_queued","job_id":job["id"],
                 "phase":"queued","status":"queued"})
     return {"job_id":job["id"],"status":"queued","total":len(paths)}
