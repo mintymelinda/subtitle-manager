@@ -276,7 +276,17 @@ def candidate_decision(candidate_id: int, request: CandidateDecisionRequest):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if decision is None:
         raise HTTPException(status_code=404, detail="Candidate not found.")
-    return decision
+    job = create_job("review", total=1, metadata={"decision":request.decision})
+    start_job(job["id"])
+    record_job_item(job["id"], media_path=row["media_relative_path"], status="completed",
+                    phase="review", candidate_id=candidate_id,
+                    review_decision=request.decision)
+    update_job_progress(job["id"], phase="review", completed=1, succeeded=1)
+    finish_job(job["id"], "completed")
+    logger.info("candidate_reviewed", extra={"event":"candidate_reviewed",
+                "candidate_id":candidate_id,"media_path":row["media_relative_path"],
+                "phase":"review","status":request.decision})
+    return {**decision, "job_id":job["id"]}
 
 
 def _run_injection_job(job_id: int, candidate_id: int, row: dict,
