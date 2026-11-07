@@ -178,7 +178,12 @@ class OpenSubtitlesClient:
                         parsed.hostname == "opensubtitles.com"
                         or parsed.hostname.endswith(".opensubtitles.com")
                     ):
-                        self.base_url = returned
+                        if not parsed.path or parsed.path == "/":
+                            returned += "/api/v1"
+                        elif not parsed.path.rstrip("/").endswith("/api/v1"):
+                            returned = ""
+                        if returned:
+                            self.base_url = returned
                 return payload
         except urllib.error.HTTPError as exc:
             if exc.code == 429 and retry_rate_limit:
