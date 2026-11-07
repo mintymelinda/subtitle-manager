@@ -43,9 +43,11 @@ class JobHistoryTests(unittest.TestCase):
         queued = create_job("scan")
         running = create_job("inject")
         start_job(running["id"])
+        record_job_item(running["id"], media_path="Movies/title.mkv", status="running", phase="muxing")
         self.assertEqual(recover_interrupted_jobs(), 2)
         self.assertEqual(get_job(queued["id"])["status"], "interrupted")
         self.assertEqual(get_job(running["id"])["status"], "interrupted")
+        self.assertEqual(get_job(running["id"])["items"][0]["status"], "interrupted")
         self.assertEqual(recover_interrupted_jobs(), 0)
 
     def test_failed_job_retains_actionable_error(self):
