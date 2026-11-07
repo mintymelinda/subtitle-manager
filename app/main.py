@@ -11,7 +11,7 @@ from app.config import settings
 from app.database import (
     initialize, record_scan, save_candidate, mark_candidate_staged,
     mark_candidate_error, list_candidates, list_media_files, set_candidate_decision,
-    get_candidate, claim_candidate_patch, finish_candidate_patch,
+    get_candidate, claim_candidate_patch, finish_candidate_patch, recover_interrupted_patches,
 )
 from app.media import inspect_media
 from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError, assess_subtitle_payload
@@ -36,6 +36,7 @@ class InjectRequest(BaseModel):
 @app.on_event("startup")
 def startup():
     initialize()
+    recover_interrupted_patches()
 
 
 def media_path_is_safe(path: Path, root: Path) -> bool:
