@@ -154,7 +154,8 @@ if(c.review_decision==="pending"&&!c.is_stale){const actions=el("div",undefined,
 candidateList.append(card);}}
 async function decide(id,decision,button){if(!confirm((decision==="approved"?"Approve":"Reject")+" this subtitle for this exact media file?"))return;button.disabled=true;try{const r=await fetch("/api/candidates/"+id+"/decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);await loadCandidates();}catch(e){alert("Could not save decision: "+e.message);button.disabled=false;}}
 scanButton.addEventListener("click",async()=>{scanButton.disabled=true;status.textContent="Scanning media and staging candidates…";scanResults.replaceChildren();try{const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:document.querySelector("#scan-path").value})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);status.textContent="Scan complete: "+d.files.length+" media files inspected.";renderScan(d.files);await loadCandidates();}catch(e){status.textContent="Scan failed: "+e.message;}finally{scanButton.disabled=false;}});
-loadCandidates().catch(e=>candidateList.textContent="Could not load candidates: "+e.message);\nfetch("/api/media").then(r=>r.json()).then(d=>renderScan(d.media.map(m=>({path:m.relative_path,...m.inspection,has_verified_english_subtitle:m.has_verified_english_subtitle})))).catch(()=>{});
+loadCandidates().catch(e=>candidateList.textContent="Could not load candidates: "+e.message);
+fetch("/api/media").then(r=>r.json()).then(d=>renderScan(d.media.map(m=>({path:m.relative_path,...m.inspection,has_verified_english_subtitle:m.has_verified_english_subtitle})))).catch(()=>{});
 </script></body></html>""")
 
 
@@ -173,7 +174,12 @@ def config():
     }
 
 
-@app.get("/api/media")\ndef scanned_media():\n    return {"media": list_media_files()}\n\n\n@app.get("/api/candidates")
+@app.get("/api/media")
+def scanned_media():
+    return {"media": list_media_files()}
+
+
+@app.get("/api/candidates")
 def candidates():
     rows = list_candidates()
     media_root = Path(settings.media_root).resolve()
