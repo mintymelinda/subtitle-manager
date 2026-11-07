@@ -1,6 +1,7 @@
 from pathlib import Path
 import subprocess
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from fastapi.responses import HTMLResponse
 
 from app.config import settings
@@ -9,6 +10,10 @@ from app.media import inspect_media
 from app.scanner import scan_media
 
 app = FastAPI(title=settings.app_name)
+
+
+class ScanRequest(BaseModel):
+    path: str = "/media"
 
 
 @app.on_event("startup")
@@ -37,13 +42,12 @@ button:disabled{opacity:.5;cursor:not-allowed}pre{white-space:pre-wrap;overflow-
 <p>Find missing English subtitles and review candidates before changing media.</p>
 <div class="notice"><strong>Safety:</strong> scanning never changes media. Every patch requires explicit per-file approval.
 Test mode is enabled by default and is limited to one approved file.</div>
-<section class="panel"><h2>Media scan</h2><p id="root"></p>
+<section class="panel"><h2>Media scan</h2><label for="scan-path">Folder to scan</label><br><input id="scan-path" type="text" value="/media" style="box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-radius:8px;border:1px solid #64748b;background:#111827;color:#e5e7eb"><p id="root">Mounted media is available under /media. Enter a folder within that mount.</p>
 <button id="scan">Start scan</button><p id="status">Ready.</p><pre id="results"></pre></section>
 <script>
 const scan=document.querySelector('#scan'),status=document.querySelector('#status'),results=document.querySelector('#results');
-fetch('/api/config').then(r=>r.json()).then(c=>{document.querySelector('#root').textContent='Configured media root: '+c.media_root;});
 scan.addEventListener('click',async()=>{scan.disabled=true;status.textContent='Scanning…';results.textContent='';
-try{const r=await fetch('/api/scan',{method:'POST'});const data=await r.json();if(!r.ok)throw Error(data.detail||r.statusText);
+try{const r=await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:document.querySelector('#scan-path').value})});const data=await r.json();if(!r.ok)throw Error(data.detail||r.statusText);
 status.textContent='Scan complete: '+data.files.length+' media files inspected.';results.textContent=JSON.stringify(data.files,null,2);
 }catch(e){status.textContent='Scan failed: '+e.message;}finally{scan.disabled=false;}});
 </script></body></html>""")
@@ -60,8 +64,22 @@ def config():
 
 
 @app.post("/api/scan")
-def scan():
-    root = Path(settings.media_root)
+def scan(request: ScanRequest):
+    media_root = Path(settings.media_root).resolve()
+    requested = Path(request.path.strip() or "/media")
+    if requested.is_absolute() and str(requested).startswith("/media/"):
+        requested = Path(str(requested)[len("/media/"):])
+    elif requested.is_absolute() and str(requested) == "/media":
+        requested = Path(".")
+    elif requested.is_absolute():
+        raise HTTPException(status_code=400, detail="Choose a folder inside the mounted /media directory.")
+    if ".." in requested.parts:
+        raise HTTPException(status_code=400, detail="Parent-directory paths are not allowed.")
+    root = (media_root / requested).resolve()
+    if not root.is_relative_to(media_root):
+        raise HTTPException(status_code=400, detail="The selected folder must be inside /media.")
+    if not root.is_dir():
+        raise HTTPException(status_code=400, detail="The selected folder does not exist or is not a directory.")
     try:
         paths = list(scan_media(root))
     except (OSError, ValueError) as exc:
