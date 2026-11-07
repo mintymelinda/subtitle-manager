@@ -91,6 +91,14 @@ def assess_subtitle_payload(file_name: str, payload: bytes) -> dict[str, Any]:
         return {"content_status": "unknown", "content_language": None, "content_confidence": None}
     try:
         text = payload.decode("utf-8-sig", errors="replace")
+        if extension in {".ass", ".ssa"}:
+            dialogue = []
+            for line in text.splitlines():
+                if line.lower().startswith("dialogue:"):
+                    fields = line.split(",", 9)
+                    if len(fields) == 10:
+                        dialogue.append(fields[9])
+            text = " ".join(dialogue)
         text = re.sub(r"[{][^}]*[}]", " ", text)
         text = re.sub(r"(?m)^ *[0-9]+ *$", " ", text)
         text = re.sub(r"(?m)^.*[0-9]{2}:[0-9]{2}:[0-9]{2}[,.][0-9]+ *-->.*$", " ", text)
