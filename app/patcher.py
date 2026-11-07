@@ -99,7 +99,7 @@ def _restore_from_backup(backup: Path, source: Path) -> None:
         rollback.unlink(missing_ok=True)
 
 
-def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool = True) -> dict:
+def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool = True, expected_size: int | None = None, expected_mtime: float | None = None) -> dict:
     """Patch one explicitly approved MKV. Test mode always retains the recovery copy."""
     if approved is not True:
         raise PermissionError("Explicit approval for this media file is required")
@@ -113,6 +113,11 @@ def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool =
     if not source.is_file() or source == subtitle:
         raise ValueError("Source media file is invalid")
     original_snapshot = _snapshot(source)
+    current_stat = source.stat()
+    if expected_size is not None and current_stat.st_size != expected_size:
+        raise RuntimeError("Approved media file size no longer matches the reviewed version")
+    if expected_mtime is not None and current_stat.st_mtime != expected_mtime:
+        raise RuntimeError("Approved media modification time no longer matches the reviewed version")
     before = _probe(source)
     source_format = (before.get("format") or {}).get("format_name", "").lower()
     if "matroska" not in source_format:
