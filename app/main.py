@@ -140,7 +140,7 @@ button:disabled{opacity:.5;cursor:not-allowed}.notice{border-left:4px solid #eab
 input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-radius:8px;border:1px solid #64748b;background:#111827;color:#e5e7eb}
 </style></head><body><h1>Subtitle Manager</h1>
 <p>Find missing English subtitles and review candidates before changing media.</p>
-<div class="notice"><strong>Safety:</strong> scanning and subtitle downloads never change media files. Approving a candidate records your selection only; media modification is a separate workflow and is not available here.</div>
+<div class="notice"><strong>Safety:</strong> scanning and downloads never change media. Injection requires a separately approved candidate and a second confirmation. Current mode: <strong id="mode">loading…</strong>.</div>
 <section class="panel"><h2>Media scan</h2><label for="scan-path">Folder to scan</label><input id="scan-path" type="text" value="/media"><p>Enter a folder within the mounted /media directory.</p>
 <button id="scan">Start scan</button><p id="status">Ready.</p><div id="scan-results"></div></section>
 <section class="panel"><h2>Subtitle candidate review</h2><p>Every candidate is shown under its exact media file. Inspect the release, match rationale, and subtitle content before deciding.</p><div id="candidate-list">Loading saved candidates…</div></section>
@@ -157,8 +157,11 @@ if(c.is_stale)card.append(el("p","This candidate is stale: the media file change
 card.append(el("p","Review decision: "+c.review_decision+(c.review_updated_at?" · "+c.review_updated_at:"")));
 if(c.status==="staged"){const links=el("div",undefined,"actions"),preview=el("a","Preview subtitle"),download=el("a","Download candidate");preview.href="/api/candidates/"+c.id+"/preview";preview.target="_blank";preview.rel="noopener";download.href="/api/candidates/"+c.id+"/download";links.append(preview,download);card.append(links);}else if(c.last_error){card.append(el("p",c.last_error,"warning"));}
 if(c.status==="staged"&&c.review_decision==="pending"&&!c.is_stale){const actions=el("div",undefined,"actions"),approve=el("button","Approve this candidate"),reject=el("button","Reject this candidate");reject.className="secondary";approve.addEventListener("click",()=>decide(c.id,"approved",approve));reject.addEventListener("click",()=>decide(c.id,"rejected",reject));actions.append(approve,reject);card.append(actions);}
+if(c.status==="staged"&&c.review_decision==="approved"&&!c.is_stale&&c.patch_status!=="patched"&&c.patch_status!=="running"&&c.patch_status!=="interrupted"){const injectButton=el("button",c.patch_status==="failed"?"Retry injection":"Inject approved subtitle");injectButton.addEventListener("click",()=>inject(c.id,injectButton));card.append(injectButton);}
 candidateList.append(card);}}
 async function decide(id,decision,button){if(!confirm((decision==="approved"?"Approve":"Reject")+" this subtitle for this exact media file?"))return;button.disabled=true;try{const r=await fetch("/api/candidates/"+id+"/decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);await loadCandidates();}catch(e){alert("Could not save decision: "+e.message);button.disabled=false;}}
+async function inject(id,button){const mode=document.querySelector("#mode").textContent;const warning=mode==="TEST MODE"?"TEST MODE will replace this MKV and retain a recovery copy beside it.":"LIVE MODE will replace this MKV; its recovery copy is deleted only after post-replacement verification.";if(!confirm(warning+"\\n\\nInject the explicitly approved subtitle into this exact media file now?"))return;button.disabled=true;try{const r=await fetch("/api/candidates/"+id+"/inject",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirm:true})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);alert("Subtitle injection completed. "+(d.backup?"Recovery copy retained at: "+d.backup:"Temporary recovery copy removed after verification."));await loadCandidates();}catch(e){alert("Injection failed: "+e.message);button.disabled=false;await loadCandidates();}}
+fetch("/api/config").then(r=>r.json()).then(c=>{document.querySelector("#mode").textContent=c.test_mode?"TEST MODE":"LIVE MODE";}).catch(()=>{document.querySelector("#mode").textContent="unknown";});
 scanButton.addEventListener("click",async()=>{scanButton.disabled=true;status.textContent="Scanning media and staging candidates…";scanResults.replaceChildren();try{const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:document.querySelector("#scan-path").value})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);status.textContent="Scan complete: "+d.files.length+" media files inspected.";renderScan(d.files);await loadCandidates();}catch(e){status.textContent="Scan failed: "+e.message;}finally{scanButton.disabled=false;}});
 loadCandidates().catch(e=>candidateList.textContent="Could not load candidates: "+e.message);
 fetch("/api/media").then(r=>r.json()).then(d=>renderScan(d.media.map(m=>({path:m.relative_path,...m.inspection,has_verified_english_subtitle:m.has_verified_english_subtitle})))).catch(()=>{});
@@ -205,7 +208,7 @@ def candidates():
         "release", "moviehash_match", "download_count", "rating",
         "trusted_uploader", "hearing_impaired", "ai_translated", "match_score",
         "match_reasons", "status", "review_decision", "review_updated_at",
-        "last_error", "is_stale", "inspection",
+        "last_error", "is_stale", "inspection", "patch_status", "patch_started_at", "patch_completed_at",
     )
     return {"candidates": [{key: row.get(key) for key in fields} for row in rows], "count": len(rows)}
 
