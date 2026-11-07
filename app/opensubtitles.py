@@ -91,10 +91,10 @@ def assess_subtitle_payload(file_name: str, payload: bytes) -> dict[str, Any]:
         return {"content_status": "unknown", "content_language": None, "content_confidence": None}
     try:
         text = payload.decode("utf-8-sig", errors="replace")
-        text = re.sub(r"\\{[^}]*\\}", " ", text)
-        text = re.sub(r"(?m)^\\s*\\d+\\s*$", " ", text)
-        text = re.sub(r"(?m)^.*\\d{2}:\\d{2}:\\d{2}[,.]\\d+\\s*-->.*$", " ", text)
-        text = text.replace(r"\\N", " ").replace(r"\\n", " ")
+        text = re.sub(r"[{][^}]*[}]", " ", text)
+        text = re.sub(r"(?m)^ *[0-9]+ *$", " ", text)
+        text = re.sub(r"(?m)^.*[0-9]{2}:[0-9]{2}:[0-9]{2}[,.][0-9]+ *-->.*$", " ", text)
+        text = text.replace(chr(92) + "N", " ").replace(chr(92) + "n", " ")
         text = re.sub(r"<[^>]+>", " ", text)
         sample = " ".join(text.split())[:12000]
         if len(sample) < 60:
@@ -102,10 +102,7 @@ def assess_subtitle_payload(file_name: str, payload: bytes) -> dict[str, Any]:
         prediction = detect_langs(sample)[0]
         language = prediction.lang
         confidence = float(prediction.prob)
-        if confidence < 0.80:
-            status = "unknown"
-        else:
-            status = "english" if language == "en" else "other"
+        status = "unknown" if confidence < 0.80 else ("english" if language == "en" else "other")
         return {
             "content_status": status,
             "content_language": language,
@@ -113,7 +110,6 @@ def assess_subtitle_payload(file_name: str, payload: bytes) -> dict[str, Any]:
         }
     except (UnicodeError, LangDetectException, IndexError, ValueError):
         return {"content_status": "unknown", "content_language": None, "content_confidence": None}
-
 
 class OpenSubtitlesClient:
     def __init__(
