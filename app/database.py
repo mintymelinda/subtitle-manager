@@ -42,6 +42,9 @@ def initialize():
             file_name TEXT NOT NULL,
             language TEXT NOT NULL,
             format TEXT NOT NULL,
+            content_language TEXT,
+            content_language_confidence REAL,
+            content_status TEXT NOT NULL DEFAULT 'unknown',
             release TEXT,
             moviehash_match INTEGER NOT NULL DEFAULT 0,
             download_count INTEGER NOT NULL DEFAULT 0,
@@ -126,14 +129,20 @@ def save_candidate(media_relative_path: str, media_size: int, media_modified_at:
 
 
 def mark_candidate_staged(candidate_id: int, staged_path: str,
-                          remaining: int | None = None):
+                          remaining: int | None = None, assessment: dict | None = None):
     with connect() as db:
         db.execute("""
             UPDATE subtitle_candidates
             SET status='staged', staged_path=?, provider_download_remaining=?,
+                content_language=?, content_language_confidence=?, content_status=?,
                 last_error=NULL, updated_at=CURRENT_TIMESTAMP
             WHERE id=?
-        """, (staged_path, remaining, candidate_id))
+        """, (
+            staged_path, remaining,
+            (assessment or {}).get('content_language'),
+            (assessment or {}).get('content_confidence'),
+            (assessment or {}).get('content_status', 'unknown'), candidate_id,
+        ))
 
 
 def mark_candidate_error(candidate_id: int, error: str):
