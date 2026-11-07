@@ -39,11 +39,7 @@ A self-hosted web application for finding missing English subtitles and adding a
 
 ## Not implemented yet
 
-- API workflow that invokes the patcher after candidate approval (approval currently records the selected candidate only; it does not modify media).
-
-- A test-mode coordinator that enforces the one-file limit across a complete user session.
-
-
+- Support for non-MKV media containers; the transactional patcher currently supports MKV only.
 
 ## Jobs, progress, and logs
 
