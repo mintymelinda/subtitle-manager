@@ -5,10 +5,16 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.config import settings
+from app.database import initialize, record_scan
 from app.media import inspect_media
 from app.scanner import scan_media
 
 app = FastAPI(title=settings.app_name)
+
+
+@app.on_event("startup")
+def startup():
+    initialize()
 
 
 class ScanRequest(BaseModel):
@@ -72,8 +78,11 @@ def scan():
             continue
         try:
             details = inspect_media(path)
+            stat = path.stat()
+            relative_path = str(path.relative_to(root.resolve()))
+            record_scan(relative_path, stat.st_size, stat.st_mtime)
             inspected.append({
-                "path": str(path.relative_to(root.resolve())),
+                "path": relative_path,
                 "size": details["size"],
                 "duration": details["duration"],
                 "video_streams": details["video_streams"],
