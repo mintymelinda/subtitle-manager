@@ -22,7 +22,9 @@ def initialize():
             size INTEGER,
             modified_at REAL,
             status TEXT NOT NULL DEFAULT 'scanned',
-            last_scanned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            last_scanned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            has_verified_english_subtitle INTEGER NOT NULL DEFAULT 0,
+            inspection_json TEXT NOT NULL DEFAULT '{}'
         );
         CREATE TABLE IF NOT EXISTS patch_history (
             id INTEGER PRIMARY KEY,
@@ -56,12 +58,26 @@ def initialize():
             match_reasons TEXT NOT NULL DEFAULT '[]',
             status TEXT NOT NULL DEFAULT 'discovered',
             staged_path TEXT,
+            review_decision TEXT NOT NULL DEFAULT 'pending',
+            review_updated_at TEXT,
             provider_download_remaining INTEGER,
             last_error TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(media_relative_path, file_id)
         );
+        """)
+        media_columns = {row[1] for row in db.execute("PRAGMA table_info(media_files)")}
+        if "has_verified_english_subtitle" not in media_columns:
+            db.execute("ALTER TABLE media_files ADD COLUMN has_verified_english_subtitle INTEGER NOT NULL DEFAULT 0")
+        if "inspection_json" not in media_columns:
+            db.execute("ALTER TABLE media_files ADD COLUMN inspection_json TEXT NOT NULL DEFAULT '{}'")
+        candidate_columns = {row[1] for row in db.execute("PRAGMA table_info(subtitle_candidates)")}
+        if "review_decision" not in candidate_columns:
+            db.execute("ALTER TABLE subtitle_candidates ADD COLUMN review_decision TEXT NOT NULL DEFAULT 'pending'")
+        if "review_updated_at" not in candidate_columns:
+            db.execute("ALTER TABLE subtitle_candidates ADD COLUMN review_updated_at TEXT")
+        db.executescript("""
         CREATE INDEX IF NOT EXISTS idx_subtitle_candidates_media
             ON subtitle_candidates(media_relative_path);
         CREATE INDEX IF NOT EXISTS idx_subtitle_candidates_status
@@ -69,16 +85,24 @@ def initialize():
         """)
 
 
-def record_scan(relative_path: str, size: int | None, modified_at: float | None):
+def record_scan(relative_path: str, size: int | None, modified_at: float | None,
+                inspection: dict | None = None):
     with connect() as db:
         db.execute("""
-            INSERT INTO media_files(relative_path, size, modified_at)
-            VALUES (?, ?, ?)
+            INSERT INTO media_files(
+                relative_path, size, modified_at, has_verified_english_subtitle, inspection_json
+            ) VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(relative_path) DO UPDATE SET
                 size=excluded.size,
                 modified_at=excluded.modified_at,
+                has_verified_english_subtitle=excluded.has_verified_english_subtitle,
+                inspection_json=excluded.inspection_json,
                 last_scanned_at=CURRENT_TIMESTAMP
-        """, (relative_path, size, modified_at))
+        """, (
+            relative_path, size, modified_at,
+            int(bool((inspection or {}).get("has_verified_english_subtitle"))),
+            json.dumps(inspection or {}),
+        ))
 
 
 def save_candidate(media_relative_path: str, media_size: int, media_modified_at: float,
@@ -152,3 +176,62 @@ def mark_candidate_error(candidate_id: int, error: str, status: str = 'download_
             SET status=?, last_error=?, updated_at=CURRENT_TIMESTAMP
             WHERE id=? AND status NOT IN ('staged', 'rejected_non_english')
         """, (status, error[:500], candidate_id))
+
+
+
+def list_candidates(media_relative_path: str | None = None) -> list[dict]:
+    query = """
+        SELECT c.*, m.size AS current_media_size, m.modified_at AS current_media_modified_at,
+               m.has_verified_english_subtitle, m.inspection_json
+        FROM subtitle_candidates c
+        LEFT JOIN media_files m ON m.relative_path = c.media_relative_path
+    """
+    params: tuple = ()
+    if media_relative_path is not None:
+        query += " WHERE c.media_relative_path=?"
+        params = (media_relative_path,)
+    query += " ORDER BY c.media_relative_path, c.match_score DESC, c.id"
+    with connect() as db:
+        rows = db.execute(query, params).fetchall()
+    results = []
+    for row in rows:
+        item = dict(row)
+        item["match_reasons"] = json.loads(item.get("match_reasons") or "[]")
+        item["inspection"] = json.loads(item.pop("inspection_json", "{}") or "{}")
+        item["is_stale"] = (
+            item.get("current_media_size") != item.get("media_size")
+            or item.get("current_media_modified_at") != item.get("media_modified_at")
+        )
+        results.append(item)
+    return results
+
+
+def set_candidate_decision(candidate_id: int, decision: str) -> dict | None:
+    if decision not in {"approved", "rejected"}:
+        raise ValueError("Decision must be approved or rejected.")
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        candidate = db.execute(
+            "SELECT id, media_relative_path, status, review_decision FROM subtitle_candidates WHERE id=?",
+            (candidate_id,),
+        ).fetchone()
+        if candidate is None:
+            return None
+        if candidate["status"] != "staged":
+            raise ValueError("Only successfully staged candidates can be reviewed.")
+        if decision == "approved":
+            other = db.execute(
+                "SELECT id FROM subtitle_candidates WHERE media_relative_path=? AND review_decision='approved' AND id!=?",
+                (candidate["media_relative_path"], candidate_id),
+            ).fetchone()
+            if other:
+                raise ValueError("Another candidate is already approved for this media file. Reject it first.")
+        db.execute(
+            "UPDATE subtitle_candidates SET review_decision=?, review_updated_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (decision, candidate_id),
+        )
+        updated = db.execute(
+            "SELECT id, media_relative_path, review_decision, review_updated_at FROM subtitle_candidates WHERE id=?",
+            (candidate_id,),
+        ).fetchone()
+        return dict(updated)
