@@ -83,8 +83,9 @@ def scan():
                 "video_streams": details["video_streams"],
                 "audio_streams": details["audio_streams"],
                 "subtitle_streams": details["subtitle_streams"],
-                "has_english_subtitle_metadata": details["has_english_subtitle_metadata"],
-                "needs_review": not details["has_english_subtitle_metadata"]
+                "has_verified_english_subtitle": details["has_verified_english_subtitle"],
+                "subtitle_content_assessment": details["subtitle_content_assessment"],
+                "needs_review": not details["has_verified_english_subtitle"]
             })
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             inspected.append({"path": str(path.relative_to(root.resolve())), "error": str(exc)})
