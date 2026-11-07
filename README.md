@@ -35,20 +35,20 @@ The patching module is not exposed as a web action yet. Media is not modified by
 ## Requirements
 
 - Docker Engine and Docker Compose.
-- A media directory mounted into the container with write permission for approved patch operations.
+- The host media directory `/volume1/media` mounted into the container at `/media`, with write permission for approved patch operations.
 - OpenSubtitles API credentials (provider integration is planned, not active yet).
 
 ## Quick start
 
 1. Copy `.env.example` to `.env`.
-2. Set `MEDIA_PATH` to the host media directory you want the container to scan.
+2. The Compose volume maps the NAS media directory `/volume1/media` to `/media` in the container by default. You can override the host-side `MEDIA_PATH` in `.env` if the NAS folder differs.
 3. Start the service:
 
    ```sh
    docker compose up -d --build
    ```
 
-4. Open http://localhost:8080 and start a scan.
+4. Open http://localhost:8080, enter the folder you want to scan (default `/media`, or a subfolder such as `/media/Movies`), and start the scan. The folder prompt is restricted to the mounted media volume; it cannot browse outside that mount.
 
 Test mode is enabled by default. The current web interface only scans and inspects; it cannot approve or modify media yet.
 
