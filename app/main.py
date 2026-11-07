@@ -159,6 +159,72 @@ def config():
     }
 
 
+@app.get("/api/candidates")
+def candidates():
+    rows = list_candidates()
+    fields = (
+        "id", "media_relative_path", "file_name", "language", "format",
+        "content_language", "content_language_confidence", "content_status",
+        "release", "moviehash_match", "download_count", "rating",
+        "trusted_uploader", "hearing_impaired", "ai_translated", "match_score",
+        "match_reasons", "status", "review_decision", "review_updated_at",
+        "last_error", "is_stale", "inspection",
+    )
+    return {"candidates": [{key: row.get(key) for key in fields} for row in rows], "count": len(rows)}
+
+
+def get_staged_candidate(candidate_id: int) -> tuple[dict, Path]:
+    row = next((item for item in list_candidates() if item["id"] == candidate_id), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+    if row["status"] != "staged" or not row.get("staged_path"):
+        raise HTTPException(status_code=409, detail="This candidate has not been staged successfully.")
+    staging_root = Path(settings.subtitle_staging_path).resolve()
+    staged_path = Path(row["staged_path"]).resolve()
+    if not staged_path.is_relative_to(staging_root) or not staged_path.is_file():
+        raise HTTPException(status_code=404, detail="Staged subtitle file is unavailable.")
+    return row, staged_path
+
+
+@app.get("/api/candidates/{candidate_id}/preview")
+def preview_candidate(candidate_id: int):
+    row, staged_path = get_staged_candidate(candidate_id)
+    if row["format"] == "sup":
+        raise HTTPException(status_code=415, detail="Bitmap subtitles cannot be previewed as text; download the file to inspect it.")
+    try:
+        preview_text = staged_path.read_bytes()[:200_000].decode("utf-8-sig", errors="replace")
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="Could not read the staged subtitle.") from exc
+    return PlainTextResponse(preview_text, headers={"Content-Disposition": "inline"})
+
+
+@app.get("/api/candidates/{candidate_id}/download")
+def download_candidate(candidate_id: int):
+    row, staged_path = get_staged_candidate(candidate_id)
+    return FileResponse(staged_path, filename=row["file_name"], media_type="application/octet-stream")
+
+
+@app.post("/api/candidates/{candidate_id}/decision")
+def candidate_decision(candidate_id: int, request: CandidateDecisionRequest):
+    if request.decision not in {"approved", "rejected"}:
+        raise HTTPException(status_code=400, detail="Decision must be approved or rejected.")
+    row, _ = get_staged_candidate(candidate_id)
+    media_root = Path(settings.media_root).resolve()
+    media_path = (media_root / row["media_relative_path"]).resolve()
+    if not media_path.is_relative_to(media_root) or not media_path.is_file():
+        raise HTTPException(status_code=409, detail="The associated media file is no longer available. Rescan the folder.")
+    stat_result = media_path.stat()
+    if stat_result.st_size != row["media_size"] or stat_result.st_mtime != row["media_modified_at"]:
+        raise HTTPException(status_code=409, detail="The media file changed after this candidate was found. Rescan before reviewing.")
+    try:
+        decision = set_candidate_decision(candidate_id, request.decision)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if decision is None:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+    return decision
+
+
 @app.post("/api/scan")
 def scan(request: ScanRequest):
     media_root = Path(settings.media_root).resolve()
