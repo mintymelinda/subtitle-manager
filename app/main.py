@@ -11,10 +11,12 @@ from app.config import settings
 from app.database import (
     initialize, record_scan, save_candidate, mark_candidate_staged,
     mark_candidate_error, list_candidates, list_media_files, set_candidate_decision,
+    get_candidate, claim_candidate_patch, finish_candidate_patch,
 )
 from app.media import inspect_media
 from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError, assess_subtitle_payload
 from app.scanner import scan_media
+from app.patcher import patch_mkv
 
 app = FastAPI(title=settings.app_name)
 
@@ -25,6 +27,10 @@ class ScanRequest(BaseModel):
 
 class CandidateDecisionRequest(BaseModel):
     decision: str
+
+
+class InjectRequest(BaseModel):
+    confirm: bool = False
 
 
 @app.on_event("startup")
@@ -254,6 +260,69 @@ def candidate_decision(candidate_id: int, request: CandidateDecisionRequest):
     if decision is None:
         raise HTTPException(status_code=404, detail="Candidate not found.")
     return decision
+
+
+@app.post("/api/candidates/{candidate_id}/inject")
+def inject_candidate(candidate_id: int, request: InjectRequest):
+    if request.confirm is not True:
+        raise HTTPException(status_code=400, detail="Explicit confirmation is required for media modification.")
+    row = get_candidate(candidate_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+    if row["status"] != "staged" or row["review_decision"] != "approved":
+        raise HTTPException(status_code=409, detail="This exact subtitle candidate must be explicitly approved before injection.")
+    if row.get("patch_status") == "patched":
+        raise HTTPException(status_code=409, detail="This candidate has already been injected.")
+    media_root = Path(settings.media_root).resolve(strict=True)
+    relative = Path(row["media_relative_path"])
+    if relative.is_absolute() or ".." in relative.parts:
+        raise HTTPException(status_code=400, detail="Unsafe media path.")
+    source = media_root / relative
+    try:
+        if source.is_symlink() or not source.resolve(strict=True).is_relative_to(media_root):
+            raise HTTPException(status_code=400, detail="Media path escapes the configured media root.")
+        source = source.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=404, detail="The associated media file is unavailable.")
+    if not source.is_file() or source.suffix.lower() != ".mkv":
+        raise HTTPException(status_code=415, detail="Only existing MKV media files can be patched.")
+    current = source.stat()
+    if current.st_size != row["media_size"] or current.st_mtime != row["media_modified_at"]:
+        raise HTTPException(status_code=409, detail="The media file changed after approval. Rescan and approve a fresh candidate.")
+    staging_root = Path(settings.subtitle_staging_path).resolve(strict=True)
+    staged_value = Path(row.get("staged_path") or "")
+    try:
+        if staged_value.is_symlink():
+            raise HTTPException(status_code=400, detail="Staged subtitle path cannot be a symlink.")
+        subtitle = staged_value.resolve(strict=True)
+        if not subtitle.is_relative_to(staging_root) or not subtitle.is_file():
+            raise HTTPException(status_code=404, detail="Staged subtitle file is unavailable.")
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=404, detail="Staged subtitle file is unavailable.")
+    if subtitle.suffix.lower() not in {".srt", ".ass", ".ssa", ".sup", ".sub"}:
+        raise HTTPException(status_code=415, detail="Unsupported subtitle format.")
+    try:
+        claimed = claim_candidate_patch(candidate_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if claimed is None:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+    try:
+        result = patch_mkv(source, subtitle, approved=True, test_mode=settings.test_mode)
+        finish_candidate_patch(candidate_id, "patched", result, result.get("backup"))
+        return {
+            "candidate_id": candidate_id,
+            "media": row["media_relative_path"],
+            "test_mode": settings.test_mode,
+            **result,
+        }
+    except Exception as exc:
+        safe_error = f"{type(exc).__name__}: {str(exc)[:400]}"
+        try:
+            finish_candidate_patch(candidate_id, "failed", {"error": safe_error})
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="Subtitle injection failed. The original was preserved or restored where possible; inspect recovery files and application logs.") from exc
 
 
 @app.post("/api/scan")
