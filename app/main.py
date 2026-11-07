@@ -298,6 +298,8 @@ def inject_candidate(candidate_id: int, request: InjectRequest):
     if current.st_size != row["media_size"] or current.st_mtime != row["media_modified_at"]:
         raise HTTPException(status_code=409, detail="The media file changed after approval. Rescan and approve a fresh candidate.")
     staging_root = Path(settings.subtitle_staging_path).resolve(strict=True)
+    if staging_root == media_root or staging_root.is_relative_to(media_root):
+        raise HTTPException(status_code=400, detail="Subtitle staging must remain outside the media library.")
     staged_value = Path(row.get("staged_path") or "")
     try:
         if not staged_value.is_absolute():
