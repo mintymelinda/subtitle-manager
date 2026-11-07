@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.opensubtitles import (
     OpenSubtitlesClient, OpenSubtitlesError, compute_moviehash,
-    filename_query, rank_candidate,
+    filename_query, rank_candidate, assess_subtitle_payload,
 )
 
 
@@ -93,6 +93,17 @@ class OpenSubtitlesTests(unittest.TestCase):
         self.assertEqual(query, "imdb_id=133093&languages=en&moviehash=0000000000020000&query=the+matrix+1999")
         self.assertEqual(captured[0].get_header("Api-key"), "test-secret")
         self.assertEqual(captured[0].get_header("User-agent"), "SubtitleManager v0.1.0")
+
+
+    def test_subtitle_payload_language_assessment(self):
+        english = ("This is a long English subtitle sentence with enough words to "
+                   "identify the language reliably. " * 5).encode()
+        french = ("Ceci est un texte français suffisamment long pour identifier "
+                  "la langue du sous-titre avec une certaine confiance. " * 5).encode()
+        self.assertEqual(assess_subtitle_payload("candidate.srt", english)["content_status"], "english")
+        self.assertEqual(assess_subtitle_payload("candidate.srt", french)["content_status"], "other")
+        self.assertEqual(assess_subtitle_payload("candidate.srt", b"Hi")["content_status"], "unknown")
+        self.assertEqual(assess_subtitle_payload("candidate.sup", b"binary")["content_status"], "unknown")
 
     def test_empty_api_key_is_rejected(self):
         with self.assertRaises(OpenSubtitlesError):
