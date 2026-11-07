@@ -335,7 +335,7 @@ def _run_injection_job(job_id: int, candidate_id: int, row: dict,
 
 
 @app.post("/api/candidates/{candidate_id}/inject")
-def inject_candidate(candidate_id: int, request: InjectRequest, background_tasks: BackgroundTasks | None = None):
+def inject_candidate(candidate_id: int, request: InjectRequest, background_tasks: BackgroundTasks = None):
     if request.confirm is not True:
         raise HTTPException(status_code=400, detail="Explicit confirmation is required for media modification.")
     row = get_candidate(candidate_id)
