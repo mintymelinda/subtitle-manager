@@ -60,7 +60,9 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
     staging_root = Path(settings.subtitle_staging_path).resolve()
     if staging_root == media_root or staging_root.is_relative_to(media_root):
         raise OpenSubtitlesError("Subtitle staging directory must be outside the media library.")
+    logger.info("opensubtitles_search_started", extra={"event":"opensubtitles_search_started","media_path":relative_media_path,"phase":"discovery"})
     candidates = client.search(path, metadata)
+    logger.info("opensubtitles_search_completed", extra={"event":"opensubtitles_search_completed","media_path":relative_media_path,"phase":"discovery","status":f"{len(candidates)} candidates"})
     summary = {"status": "no_candidates" if not candidates else "complete",
                "found": len(candidates), "staged": 0, "candidates": []}
     limit = max(0, min(5, int(settings.open_subtitles_max_candidates_per_file)))
@@ -103,9 +105,11 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                         os.replace(temporary, target)
                         mark_candidate_staged(row["id"], str(target), remaining, assessment)
                         status = "staged"
+                        logger.info("subtitle_candidate_staged", extra={"event":"subtitle_candidate_staged","candidate_id":row["id"],"media_path":relative_media_path,"phase":"download","status":"staged"})
                 except OpenSubtitlesError as exc:
                     mark_candidate_error(row["id"], str(exc))
                     status = "download_failed"
+                    logger.warning("subtitle_candidate_download_failed", extra={"event":"subtitle_candidate_download_failed","candidate_id":row["id"],"media_path":relative_media_path,"phase":"download","error_type":type(exc).__name__})
                 except OSError:
                     mark_candidate_error(row["id"], "Could not write the staged subtitle file.")
                     status = "download_failed"
