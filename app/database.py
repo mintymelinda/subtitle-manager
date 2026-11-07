@@ -327,3 +327,31 @@ def finish_candidate_patch(candidate_id: int, status: str, details: dict,
                 (row["media_relative_path"], row["file_name"], status,
                  json.dumps(details), candidate_id, backup_path),
             )
+
+
+def recover_interrupted_patches() -> int:
+    """Mark operations left running by a process restart; never guess whether to retry."""
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        rows = db.execute(
+            "SELECT id, media_relative_path, file_name FROM subtitle_candidates WHERE patch_status='running'"
+        ).fetchall()
+        for row in rows:
+            details = {
+                "error": "Application restarted while injection was running. Inspect the media file and retained recovery copies before taking further action.",
+                "recovery_required": True,
+            }
+            db.execute(
+                """UPDATE subtitle_candidates
+                   SET patch_status='interrupted', patch_completed_at=CURRENT_TIMESTAMP,
+                       updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                (row["id"],),
+            )
+            db.execute(
+                """INSERT INTO patch_history(
+                       relative_path, subtitle_name, status, details, candidate_id
+                   ) VALUES (?, ?, 'interrupted', ?, ?)""",
+                (row["media_relative_path"], row["file_name"],
+                 json.dumps(details), row["id"]),
+            )
+        return len(rows)
