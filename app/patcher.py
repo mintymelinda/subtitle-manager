@@ -109,10 +109,6 @@ def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool =
         raise ValueError("Unsupported or missing subtitle file")
     if not source.is_file() or source == subtitle:
         raise ValueError("Source media file is invalid")
-    if source.stat().st_dev != subtitle.stat().st_dev:
-        # The subtitle is read-only input, so this is supported; output stays beside source.
-        pass
-
     original_snapshot = _snapshot(source)
     before = _probe(source)
     if not any(s.get("codec_type") == "video" for s in before.get("streams", [])):
@@ -142,9 +138,9 @@ def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool =
 
         candidate = _probe(working)
         _validate_streams(before, candidate)
-        _preserve_metadata(source, working)
         with working.open("rb") as handle:
             os.fsync(handle.fileno())
+        _preserve_metadata(source, working)
 
         # Refuse to replace a file changed by another process during muxing.
         if _snapshot(source) != original_snapshot:
@@ -161,6 +157,8 @@ def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool =
             original_stat = backup.stat()
             if final_stat.st_mode & 0o7777 != original_stat.st_mode & 0o7777:
                 raise RuntimeError("Post-replacement verification failed: file permissions changed")
+            if final_stat.st_mtime_ns != original_stat.st_mtime_ns:
+                raise RuntimeError("Post-replacement verification failed: modification timestamp changed")
         except Exception:
             _restore_from_backup(backup, source)
             replaced = False
