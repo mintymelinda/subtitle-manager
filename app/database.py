@@ -122,7 +122,7 @@ def save_candidate(media_relative_path: str, media_size: int, media_modified_at:
             json.dumps(candidate.get("match_reasons", [])),
         ))
         row = db.execute("""
-            SELECT id, status, staged_path FROM subtitle_candidates
+            SELECT id, status, staged_path, content_language, content_language_confidence, content_status FROM subtitle_candidates
             WHERE media_relative_path=? AND file_id=?
         """, (media_relative_path, candidate["file_id"])).fetchone()
         return dict(row)
