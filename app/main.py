@@ -330,7 +330,7 @@ def inject_candidate(candidate_id: int, request: InjectRequest):
     recovery_pattern = f".{source.name}.recovery-*.bak"
     recoveries_before = set(source.parent.glob(recovery_pattern))
     try:
-        result = patch_mkv(source, subtitle, approved=True, test_mode=settings.test_mode)
+        result = patch_mkv(source, subtitle, approved=True, test_mode=settings.test_mode, expected_size=row["media_size"], expected_mtime=row["media_modified_at"])
     except Exception as exc:
         recovery_files = set(source.parent.glob(recovery_pattern)) - recoveries_before
         recovery_path = str(max(recovery_files, key=lambda p: p.stat().st_mtime_ns)) if recovery_files else None
