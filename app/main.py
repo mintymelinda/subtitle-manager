@@ -5,12 +5,12 @@ import uuid
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse, PlainTextResponse
 
 from app.config import settings
 from app.database import (
     initialize, record_scan, save_candidate, mark_candidate_staged,
-    mark_candidate_error,
+    mark_candidate_error, list_candidates, list_media_files, set_candidate_decision,
 )
 from app.media import inspect_media
 from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError, assess_subtitle_payload
@@ -21,6 +21,10 @@ app = FastAPI(title=settings.app_name)
 
 class ScanRequest(BaseModel):
     path: str = "/media"
+
+
+class CandidateDecisionRequest(BaseModel):
+    decision: str
 
 
 @app.on_event("startup")
@@ -120,23 +124,38 @@ def dashboard():
     return HTMLResponse("""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Subtitle Manager</title><style>
-body{font:16px system-ui;margin:2rem auto;padding:0 1rem;max-width:1000px;background:#111827;color:#e5e7eb}
+body{font:16px system-ui;margin:2rem auto;padding:0 1rem;max-width:1100px;background:#111827;color:#e5e7eb}
 h1{margin-bottom:.25rem}p{color:#aebbd0}.panel{background:#1f2937;padding:1rem;border-radius:12px;margin:1rem 0}
 button{background:#2563eb;color:white;border:0;border-radius:8px;padding:.7rem 1rem;cursor:pointer}
-button:disabled{opacity:.5;cursor:not-allowed}pre{white-space:pre-wrap;overflow-wrap:anywhere}
-.notice{border-left:4px solid #eab308;padding:.7rem 1rem;background:#292524}
+button:disabled{opacity:.5;cursor:not-allowed}.notice{border-left:4px solid #eab308;padding:.7rem 1rem;background:#292524}
+.candidate{background:#111827;border:1px solid #374151;border-radius:10px;padding:1rem;margin:1rem 0;min-width:0}
+.candidate h3,.candidate p{overflow-wrap:anywhere}.actions{display:flex;flex-wrap:wrap;gap:.8rem;margin-top:1rem}
+.actions a{color:#93c5fd;padding:.5rem 0}.secondary{background:#4b5563}.warning{color:#fbbf24}
+input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-radius:8px;border:1px solid #64748b;background:#111827;color:#e5e7eb}
 </style></head><body><h1>Subtitle Manager</h1>
 <p>Find missing English subtitles and review candidates before changing media.</p>
-<div class="notice"><strong>Safety:</strong> scanning and subtitle downloads never change media files.
-Every media patch requires explicit per-file approval.</div>
-<section class="panel"><h2>Media scan</h2><label for="scan-path">Folder to scan</label><br><input id="scan-path" type="text" value="/media" style="box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-radius:8px;border:1px solid #64748b;background:#111827;color:#e5e7eb"><p id="root">Mounted media is available under /media. Enter a folder within that mount.</p>
-<button id="scan">Start scan</button><p id="status">Ready.</p><pre id="results"></pre></section>
+<div class="notice"><strong>Safety:</strong> scanning and subtitle downloads never change media files. Approving a candidate records your selection only; media modification is a separate workflow and is not available here.</div>
+<section class="panel"><h2>Media scan</h2><label for="scan-path">Folder to scan</label><input id="scan-path" type="text" value="/media"><p>Enter a folder within the mounted /media directory.</p>
+<button id="scan">Start scan</button><p id="status">Ready.</p><div id="scan-results"></div></section>
+<section class="panel"><h2>Subtitle candidate review</h2><p>Every candidate is shown under its exact media file. Inspect the release, match rationale, and subtitle content before deciding.</p><div id="candidate-list">Loading saved candidates…</div></section>
 <script>
-const scan=document.querySelector('#scan'),status=document.querySelector('#status'),results=document.querySelector('#results');
-scan.addEventListener('click',async()=>{scan.disabled=true;status.textContent='Scanning…';results.textContent='';
-try{const r=await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:document.querySelector('#scan-path').value})});const data=await r.json();if(!r.ok)throw Error(data.detail||r.statusText);
-status.textContent='Scan complete: '+data.files.length+' media files inspected.';results.textContent=JSON.stringify(data.files,null,2);
-}catch(e){status.textContent='Scan failed: '+e.message;}finally{scan.disabled=false;}});
+const scanButton=document.querySelector("#scan"),status=document.querySelector("#status"),scanResults=document.querySelector("#scan-results"),candidateList=document.querySelector("#candidate-list");
+function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
+function line(parent,label,value){const p=el("p");p.append(el("strong",label+": "),document.createTextNode(value===null||value===undefined?"Unknown":String(value)));parent.append(p);}
+function streams(value){if(!Array.isArray(value)||!value.length)return "None reported";return value.map(s=>[s.codec,s.language,s.title].filter(Boolean).join(" · ")||JSON.stringify(s)).join("; ");}
+function renderScan(files){scanResults.replaceChildren();for(const f of files){const card=el("article",undefined,"candidate");card.append(el("h3",f.path));card.append(el("p",f.error?"Scan error":(f.has_verified_english_subtitle?"Verified English subtitle present":"Needs subtitle review")));line(card,"Audio tracks",streams(f.audio_streams));line(card,"Existing subtitle tracks",streams(f.subtitle_streams));if(f.subtitle_candidates)line(card,"Candidate search",f.subtitle_candidates.status+" — "+f.subtitle_candidates.staged+" staged");scanResults.append(card);}}
+async function loadCandidates(){const r=await fetch("/api/candidates");const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);renderCandidates(d.candidates);}
+function renderCandidates(items){candidateList.replaceChildren();if(!items.length){candidateList.append(el("p","No saved candidates yet. Run a scan with OpenSubtitles configured."));return;}
+for(const c of items){const card=el("article",undefined,"candidate");card.append(el("h3",c.media_relative_path));card.append(el("p","Candidate #"+c.id+" · "+c.file_name));line(card,"Provider language / format",c.language+" / "+c.format);line(card,"Release",c.release||"Not provided");line(card,"Match score",c.match_score);line(card,"Exact file hash match",c.moviehash_match?"Yes":"No");line(card,"Candidate download status",c.status);line(card,"Match rationale",(c.match_reasons||[]).join("; ")||"No rationale supplied");line(card,"Content check",c.content_status+(c.content_language?" · "+c.content_language:"")+(c.content_language_confidence?" · confidence "+Number(c.content_language_confidence).toFixed(2):""));line(card,"Existing audio tracks",streams(c.inspection?.audio_streams));line(card,"Existing subtitle tracks",streams(c.inspection?.subtitle_streams));
+if(c.is_stale)card.append(el("p","This candidate is stale: the media file changed after discovery. Rescan before reviewing.","warning"));
+card.append(el("p","Review decision: "+c.review_decision+(c.review_updated_at?" · "+c.review_updated_at:"")));
+if(c.status==="staged"){const links=el("div",undefined,"actions"),preview=el("a","Preview subtitle"),download=el("a","Download candidate");preview.href="/api/candidates/"+c.id+"/preview";preview.target="_blank";preview.rel="noopener";download.href="/api/candidates/"+c.id+"/download";links.append(preview,download);card.append(links);}else if(c.last_error){card.append(el("p",c.last_error,"warning"));}
+if(c.status==="staged"&&c.review_decision==="pending"&&!c.is_stale){const actions=el("div",undefined,"actions"),approve=el("button","Approve this candidate"),reject=el("button","Reject this candidate");reject.className="secondary";approve.addEventListener("click",()=>decide(c.id,"approved",approve));reject.addEventListener("click",()=>decide(c.id,"rejected",reject));actions.append(approve,reject);card.append(actions);}
+candidateList.append(card);}}
+async function decide(id,decision,button){if(!confirm((decision==="approved"?"Approve":"Reject")+" this subtitle for this exact media file?"))return;button.disabled=true;try{const r=await fetch("/api/candidates/"+id+"/decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);await loadCandidates();}catch(e){alert("Could not save decision: "+e.message);button.disabled=false;}}
+scanButton.addEventListener("click",async()=>{scanButton.disabled=true;status.textContent="Scanning media and staging candidates…";scanResults.replaceChildren();try{const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:document.querySelector("#scan-path").value})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);status.textContent="Scan complete: "+d.files.length+" media files inspected.";renderScan(d.files);await loadCandidates();}catch(e){status.textContent="Scan failed: "+e.message;}finally{scanButton.disabled=false;}});
+loadCandidates().catch(e=>candidateList.textContent="Could not load candidates: "+e.message);
+fetch("/api/media").then(r=>r.json()).then(d=>renderScan(d.media.map(m=>({path:m.relative_path,...m.inspection,has_verified_english_subtitle:m.has_verified_english_subtitle})))).catch(()=>{});
 </script></body></html>""")
 
 
@@ -153,6 +172,88 @@ def config():
         "opensubtitles_configured": bool(settings.open_subtitles_api_key.strip()),
         "candidate_staging_enabled": bool(settings.open_subtitles_api_key.strip()),
     }
+
+
+@app.get("/api/media")
+def scanned_media():
+    return {"media": list_media_files()}
+
+
+@app.get("/api/candidates")
+def candidates():
+    rows = list_candidates()
+    media_root = Path(settings.media_root).resolve()
+    for row in rows:
+        media_path = (media_root / row["media_relative_path"]).resolve()
+        if not media_path.is_relative_to(media_root) or not media_path.is_file():
+            row["is_stale"] = True
+        else:
+            current = media_path.stat()
+            row["is_stale"] = (
+                current.st_size != row["media_size"]
+                or current.st_mtime != row["media_modified_at"]
+            )
+    fields = (
+        "id", "media_relative_path", "file_name", "language", "format",
+        "content_language", "content_language_confidence", "content_status",
+        "release", "moviehash_match", "download_count", "rating",
+        "trusted_uploader", "hearing_impaired", "ai_translated", "match_score",
+        "match_reasons", "status", "review_decision", "review_updated_at",
+        "last_error", "is_stale", "inspection",
+    )
+    return {"candidates": [{key: row.get(key) for key in fields} for row in rows], "count": len(rows)}
+
+
+def get_staged_candidate(candidate_id: int) -> tuple[dict, Path]:
+    row = next((item for item in list_candidates() if item["id"] == candidate_id), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+    if row["status"] != "staged" or not row.get("staged_path"):
+        raise HTTPException(status_code=409, detail="This candidate has not been staged successfully.")
+    staging_root = Path(settings.subtitle_staging_path).resolve()
+    staged_path = Path(row["staged_path"]).resolve()
+    if not staged_path.is_relative_to(staging_root) or not staged_path.is_file():
+        raise HTTPException(status_code=404, detail="Staged subtitle file is unavailable.")
+    return row, staged_path
+
+
+@app.get("/api/candidates/{candidate_id}/preview")
+def preview_candidate(candidate_id: int):
+    row, staged_path = get_staged_candidate(candidate_id)
+    if row["format"] == "sup":
+        raise HTTPException(status_code=415, detail="Bitmap subtitles cannot be previewed as text; download the file to inspect it.")
+    try:
+        preview_text = staged_path.read_bytes()[:200_000].decode("utf-8-sig", errors="replace")
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="Could not read the staged subtitle.") from exc
+    return PlainTextResponse(preview_text, headers={"Content-Disposition": "inline"})
+
+
+@app.get("/api/candidates/{candidate_id}/download")
+def download_candidate(candidate_id: int):
+    row, staged_path = get_staged_candidate(candidate_id)
+    return FileResponse(staged_path, filename=row["file_name"], media_type="application/octet-stream")
+
+
+@app.post("/api/candidates/{candidate_id}/decision")
+def candidate_decision(candidate_id: int, request: CandidateDecisionRequest):
+    if request.decision not in {"approved", "rejected"}:
+        raise HTTPException(status_code=400, detail="Decision must be approved or rejected.")
+    row, _ = get_staged_candidate(candidate_id)
+    media_root = Path(settings.media_root).resolve()
+    media_path = (media_root / row["media_relative_path"]).resolve()
+    if not media_path.is_relative_to(media_root) or not media_path.is_file():
+        raise HTTPException(status_code=409, detail="The associated media file is no longer available. Rescan the folder.")
+    stat_result = media_path.stat()
+    if stat_result.st_size != row["media_size"] or stat_result.st_mtime != row["media_modified_at"]:
+        raise HTTPException(status_code=409, detail="The media file changed after this candidate was found. Rescan before reviewing.")
+    try:
+        decision = set_candidate_decision(candidate_id, request.decision)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if decision is None:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+    return decision
 
 
 @app.post("/api/scan")
@@ -194,7 +295,7 @@ def scan(request: ScanRequest):
             stat_result = path.stat()
             relative_path = str(path.relative_to(root))
             media_relative_path = str(path.relative_to(media_root))
-            record_scan(media_relative_path, stat_result.st_size, stat_result.st_mtime)
+            record_scan(media_relative_path, stat_result.st_size, stat_result.st_mtime, details)
             candidate_summary = {"status": "not_configured", "found": 0, "staged": 0, "candidates": []}
             if details["has_verified_english_subtitle"]:
                 candidate_summary["status"] = "verified_english_present"

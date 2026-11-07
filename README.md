@@ -27,16 +27,17 @@ A self-hosted web application for finding missing English subtitles and adding a
   - Downloads up to the configured number of top candidates per media file into `/app/data/staged-subtitles`.
   - Applies provider rate-limit handling, download-size limits, safe archive extraction, and secret-safe error messages.
 - Transactional MKV muxing module using MKVToolNix, with explicit approval required at the function boundary and stream-preservation checks.
-- Basic web page to start a scan and inspect scan results and staged candidate metadata.
+- Responsive web dashboard to start scans, review persisted media inspection and track summaries, preview or download staged candidates, and record explicit per-file candidate approval or rejection.
+- Candidate review decisions are stored in SQLite, tied to the exact media path and scanned file size/mtime. Only one candidate can be approved for a media file at a time; changed media invalidates the previous decision.
 - GitHub Actions checks for Python compilation, unit tests, and Docker image build.
 
 ## Not implemented yet
 
-- Per-file candidate approval/rejection controls in the web UI and the API workflow that invokes the patcher.
+- API workflow that invokes the patcher after candidate approval (approval currently records the selected candidate only; it does not modify media).
 - Full job progress, structured logs, and history views.
 - A test-mode coordinator that enforces the one-file limit across a complete user session.
 
-The patching module is not exposed as a web action yet. Scanning and candidate downloads do not modify media.
+The patching module is not exposed as a web action yet. Scanning, candidate review, approval, and candidate downloads do not modify media.
 
 ## OpenSubtitles setup
 
