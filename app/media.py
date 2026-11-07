@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -43,7 +44,7 @@ def _container_metadata(format_tags: dict) -> dict:
     tags = {str(key).lower(): str(value).strip() for key, value in (format_tags or {}).items()}
     title = tags.get("title") or tags.get("show") or ""
     year = tags.get("date") or tags.get("year") or tags.get("creation_time") or ""
-    year_match = __import__("re").search(r"(19|20)\\d{2}", year)
+    year_match = re.search("[0-9]{4}", year)
     imdb_id = (
         tags.get("imdb_id") or tags.get("imdb") or tags.get("imdbid")
         or tags.get("www.imdb.com/title") or ""
