@@ -35,7 +35,8 @@ A self-hosted web application for finding missing English subtitles and adding a
 - Live dashboard polling for active job progress and a recent activity/history view that survives application restarts.
 - Structured JSON application logs with UTC timestamps, event/job/candidate context, exception details, and recursive redaction of API keys, passwords, tokens, authorization headers, and cookies.
 - Candidate review decisions are stored in SQLite, tied to the exact media path and scanned file size/mtime. Only one candidate can be approved for a media file at a time; changed media invalidates the previous decision.
-- GitHub Actions checks for Python compilation, unit tests, and Docker image build.
+- GitHub Actions checks for Python compilation, unit tests, real FFmpeg/MKVToolNix integration tests, and Docker image build.
+- Injection operations are serialized by canonical media path across application workers, so distinct approved candidates cannot concurrently replace the same MKV.
 
 ## Not implemented yet
 
