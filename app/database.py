@@ -125,6 +125,7 @@ def initialize():
         );
         CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
         CREATE INDEX IF NOT EXISTS idx_job_items_job ON job_items(job_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_job_items_job_media ON job_items(job_id, media_path);
         CREATE INDEX IF NOT EXISTS idx_subtitle_candidates_media
             ON subtitle_candidates(media_relative_path);
         CREATE INDEX IF NOT EXISTS idx_subtitle_candidates_status
@@ -470,10 +471,17 @@ def record_job_item(job_id: int, *, media_path: str, status: str,
         db.execute(
             """INSERT INTO job_items(job_id, media_path, candidate_id, status, phase,
                    review_decision, patch_status, error, details_json, completed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ?='running' THEN NULL ELSE CURRENT_TIMESTAMP END)
+               ON CONFLICT(job_id, media_path) DO UPDATE SET
+                   candidate_id=COALESCE(excluded.candidate_id, job_items.candidate_id),
+                   status=excluded.status, phase=excluded.phase,
+                   review_decision=COALESCE(excluded.review_decision, job_items.review_decision),
+                   patch_status=COALESCE(excluded.patch_status, job_items.patch_status),
+                   error=excluded.error, details_json=excluded.details_json,
+                   completed_at=excluded.completed_at""",
             (job_id, media_path, candidate_id, status, phase,
              review_decision, patch_status, (error or "")[:500],
-             json.dumps(details or {})),
+             json.dumps(details or {}), status),
         )
 
 
@@ -526,6 +534,7 @@ def recover_interrupted_jobs() -> int:
             "SELECT id, kind FROM jobs WHERE status IN ('queued','running')"
         ).fetchall()
         for row in rows:
+            db.execute("UPDATE job_items SET status='interrupted', phase='recovery', error='Application restarted before this file finished.', completed_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='running'", (row["id"],))
             db.execute(
                 """UPDATE jobs SET status='interrupted',
                    error='Application restarted before this job reached a terminal state.',
