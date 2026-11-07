@@ -50,6 +50,11 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
             relative_media_path, stat_result.st_size, stat_result.st_mtime, candidate
         )
         status = row["status"]
+        assessment = {
+            "content_status": row.get("content_status", "unknown"),
+            "content_language": row.get("content_language"),
+            "content_confidence": row.get("content_language_confidence"),
+        }
         if status != "staged":
             if client.remaining_downloads == 0:
                 status = "download_quota_reached"
@@ -57,33 +62,24 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                 try:
                     file_name, payload, remaining = client.download(candidate["file_id"])
                     assessment = assess_subtitle_payload(file_name, payload)
-                    if assessment['content_status'] == 'other':
-                        mark_candidate_error(row['id'], 'Downloaded subtitle content does not appear to be English.')
-                        status = 'content_not_english'
-                        summary['candidates'].append({
-                            'id': row['id'], 'subtitle_id': candidate['subtitle_id'],
-                            'file_id': candidate['file_id'], 'file_name': candidate['file_name'],
-                            'language': candidate['language'], 'format': candidate['format'],
-                            'release': candidate['release'], 'moviehash_match': candidate['moviehash_match'],
-                            'download_count': candidate['download_count'], 'trusted_uploader': candidate['trusted_uploader'],
-                            'hearing_impaired': candidate['hearing_impaired'], 'ai_translated': candidate['ai_translated'],
-                            'match_score': candidate['match_score'], 'match_reasons': candidate['match_reasons'],
-                            'content_status': assessment['content_status'],
-                            'content_language': assessment['content_language'],
-                            'content_confidence': assessment['content_confidence'], 'status': status,
-                        })
-                        continue
-                    staging_root.mkdir(parents=True, exist_ok=True)
-                    extension = Path(file_name).suffix.lower()
-                    target = staging_root / f"candidate-{row['id']}{extension}"
-                    temporary = target.with_name(target.name + ".part")
-                    with temporary.open("wb") as staged_file:
-                        staged_file.write(payload)
-                        staged_file.flush()
-                        os.fsync(staged_file.fileno())
-                    os.replace(temporary, target)
-                    mark_candidate_staged(row["id"], str(target), remaining)
-                    status = "staged"
+                    if assessment["content_status"] == "other":
+                        mark_candidate_error(
+                            row["id"],
+                            "Downloaded subtitle content does not appear to be English.",
+                        )
+                        status = "content_not_english"
+                    else:
+                        staging_root.mkdir(parents=True, exist_ok=True)
+                        extension = Path(file_name).suffix.lower()
+                        target = staging_root / f"candidate-{row['id']}{extension}"
+                        temporary = target.with_name(target.name + ".part")
+                        with temporary.open("wb") as staged_file:
+                            staged_file.write(payload)
+                            staged_file.flush()
+                            os.fsync(staged_file.fileno())
+                        os.replace(temporary, target)
+                        mark_candidate_staged(row["id"], str(target), remaining, assessment)
+                        status = "staged"
                 except OpenSubtitlesError as exc:
                     mark_candidate_error(row["id"], str(exc))
                     status = "download_failed"
@@ -107,10 +103,12 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
             "ai_translated": candidate["ai_translated"],
             "match_score": candidate["match_score"],
             "match_reasons": candidate["match_reasons"],
+            "content_status": assessment.get("content_status"),
+            "content_language": assessment.get("content_language"),
+            "content_confidence": assessment.get("content_confidence"),
             "status": status,
         })
     return summary
-
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
