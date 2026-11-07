@@ -225,8 +225,8 @@ def config():
     return {
         "media_root": settings.media_root,
         "test_mode": settings.test_mode,
-        "opensubtitles_configured": bool(settings.open_subtitles_api_key.strip()),
-        "candidate_staging_enabled": bool(settings.open_subtitles_api_key.strip()),
+        "opensubtitles_configured": public_provider_settings()["configured"],
+        "candidate_staging_enabled": public_provider_settings()["configured"],
     }
 
 
@@ -478,10 +478,9 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path]):
     try:
         update_job_progress(job_id, phase="inspecting", total=len(paths))
         client = None
-        if settings.open_subtitles_api_key.strip():
-            client = OpenSubtitlesClient(settings.open_subtitles_api_key,
-                                         settings.open_subtitles_username,
-                                         settings.open_subtitles_password)
+        provider = load_provider_settings()
+        if provider["api_key"]:
+            client = OpenSubtitlesClient(provider["api_key"], provider["username"], provider["password"])
         completed = succeeded = failed = 0
         for path in paths:
             if not media_path_is_safe(path, root):
