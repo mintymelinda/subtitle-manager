@@ -263,7 +263,7 @@ class OpenSubtitlesClient:
             raise OpenSubtitlesError("Subtitle download failed.") from None
         if len(payload) > MAX_DOWNLOAD_BYTES:
             raise OpenSubtitlesError("Subtitle download exceeded the 25 MiB safety limit.")
-        if payload.startswith(b"PK\\x03\\x04"):
+        if payload.startswith(bytes((0x50, 0x4B, 0x03, 0x04))):
             suggested_name, payload = self._extract_zip(payload, suggested_name)
         extension = Path(suggested_name).suffix.lower()
         if extension not in SUPPORTED_EXTENSIONS:
