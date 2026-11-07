@@ -70,6 +70,21 @@ class InjectionApprovalDatabaseTests(unittest.TestCase):
                                "content_confidence": 0.99})
         return row["id"]
 
+    def test_test_mode_allows_only_one_concurrent_injection(self):
+        first = self.create_candidate()
+        second_row = save_candidate(self.path, self.size, self.mtime, {
+            "file_id": 1235, "file_name": "alternate.srt", "language": "en",
+            "format": "srt", "match_score": 90, "match_reasons": [],
+        })
+        mark_candidate_staged(second_row["id"], str(Path(self.temp.name) / "alternate.srt"), 10,
+                              {"content_status": "english", "content_language": "en",
+                               "content_confidence": 0.99})
+        set_candidate_decision(first, "approved")
+        set_candidate_decision(second_row["id"], "approved")
+        claim_candidate_patch(first, test_mode=True)
+        with self.assertRaisesRegex(ValueError, "one injection to run at a time"):
+            claim_candidate_patch(second_row["id"], test_mode=True)
+
     def test_unapproved_candidate_cannot_be_claimed_for_injection(self):
         candidate_id = self.create_candidate()
         with self.assertRaisesRegex(ValueError, "explicitly approved"):
