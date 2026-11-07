@@ -72,7 +72,9 @@ class InjectionApprovalDatabaseTests(unittest.TestCase):
 
     def test_test_mode_allows_only_one_concurrent_injection(self):
         first = self.create_candidate()
-        second_row = save_candidate(self.path, self.size, self.mtime, {
+        second_path = "Films/other.mkv"
+        record_scan(second_path, self.size, self.mtime, {})
+        second_row = save_candidate(second_path, self.size, self.mtime, {
             "file_id": 1235, "file_name": "alternate.srt", "language": "en",
             "format": "srt", "match_score": 90, "match_reasons": [],
         })
