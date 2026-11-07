@@ -6,7 +6,7 @@ from app.config import settings
 from app.database import (
     initialize, record_scan, save_candidate, mark_candidate_staged,
     set_candidate_decision, claim_candidate_patch, finish_candidate_patch,
-    get_candidate,
+    get_candidate, recover_interrupted_patches,
 )
 
 
@@ -62,6 +62,15 @@ class InjectionApprovalDatabaseTests(unittest.TestCase):
         claim_candidate_patch(candidate_id)
         finish_candidate_patch(candidate_id, "failed", {"error": "validation failed"})
         self.assertEqual(claim_candidate_patch(candidate_id)["patch_status"], "running")
+
+    def test_restart_marks_running_patch_interrupted_and_blocks_retry(self):
+        candidate_id = self.create_candidate()
+        set_candidate_decision(candidate_id, "approved")
+        claim_candidate_patch(candidate_id)
+        self.assertEqual(recover_interrupted_patches(), 1)
+        self.assertEqual(get_candidate(candidate_id)["patch_status"], "interrupted")
+        with self.assertRaisesRegex(ValueError, "was interrupted"):
+            claim_candidate_patch(candidate_id)
 
 
 if __name__ == "__main__":
