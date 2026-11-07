@@ -176,6 +176,17 @@ def config():
 @app.get("/api/candidates")
 def candidates():
     rows = list_candidates()
+    media_root = Path(settings.media_root).resolve()
+    for row in rows:
+        media_path = (media_root / row["media_relative_path"]).resolve()
+        if not media_path.is_relative_to(media_root) or not media_path.is_file():
+            row["is_stale"] = True
+        else:
+            current = media_path.stat()
+            row["is_stale"] = (
+                current.st_size != row["media_size"]
+                or current.st_mtime != row["media_modified_at"]
+            )
     fields = (
         "id", "media_relative_path", "file_name", "language", "format",
         "content_language", "content_language_confidence", "content_status",
