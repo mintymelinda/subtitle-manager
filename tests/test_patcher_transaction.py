@@ -77,6 +77,17 @@ class TransactionalPatcherTests(unittest.TestCase):
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_bytes(), self.original)
 
+    def test_rejects_media_that_does_not_match_approved_snapshot(self):
+        with patch("app.patcher._probe") as probe:
+            with self.assertRaisesRegex(RuntimeError, "size no longer matches"):
+                patch_mkv(
+                    self.source, self.subtitle, approved=True,
+                    expected_size=self.source.stat().st_size + 1,
+                    expected_mtime=self.source.stat().st_mtime,
+                )
+            probe.assert_not_called()
+        self.assertEqual(self.source.read_bytes(), self.original)
+
     def test_requires_explicit_approval_before_any_probe_or_write(self):
         with patch("app.patcher._probe") as probe:
             with self.assertRaises(PermissionError):
