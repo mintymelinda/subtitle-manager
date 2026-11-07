@@ -272,3 +272,58 @@ def list_media_files() -> list[dict]:
         item["inspection"] = json.loads(item.pop("inspection_json") or "{}")
         results.append(item)
     return results
+
+
+def get_candidate(candidate_id: int) -> dict | None:
+    with connect() as db:
+        row = db.execute("SELECT * FROM subtitle_candidates WHERE id=?", (candidate_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def claim_candidate_patch(candidate_id: int) -> dict | None:
+    """Atomically reserve one approved candidate for a single patch operation."""
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM subtitle_candidates WHERE id=?", (candidate_id,)).fetchone()
+        if row is None:
+            return None
+        if row["status"] != "staged" or row["review_decision"] != "approved":
+            raise ValueError("This exact candidate must be staged and explicitly approved before injection.")
+        if row["patch_status"] == "patched":
+            raise ValueError("This candidate has already been injected.")
+        if row["patch_status"] == "running":
+            raise ValueError("An injection for this candidate is already running.")
+        db.execute(
+            """UPDATE subtitle_candidates
+               SET patch_status='running', patch_started_at=CURRENT_TIMESTAMP,
+                   patch_completed_at=NULL, updated_at=CURRENT_TIMESTAMP
+               WHERE id=? AND patch_status IN ('not_started', 'failed')""",
+            (candidate_id,),
+        )
+        claimed = db.execute("SELECT * FROM subtitle_candidates WHERE id=?", (candidate_id,)).fetchone()
+        return dict(claimed)
+
+
+def finish_candidate_patch(candidate_id: int, status: str, details: dict,
+                           backup_path: str | None = None) -> None:
+    if status not in {"patched", "failed"}:
+        raise ValueError("Invalid patch result status.")
+    with connect() as db:
+        db.execute(
+            """UPDATE subtitle_candidates
+               SET patch_status=?, patch_completed_at=CURRENT_TIMESTAMP,
+                   updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+            (status, candidate_id),
+        )
+        row = db.execute(
+            "SELECT media_relative_path, file_name FROM subtitle_candidates WHERE id=?",
+            (candidate_id,),
+        ).fetchone()
+        if row:
+            db.execute(
+                """INSERT INTO patch_history(
+                       relative_path, subtitle_name, status, details, candidate_id, backup_path
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (row["media_relative_path"], row["file_name"], status,
+                 json.dumps(details), candidate_id, backup_path),
+            )
