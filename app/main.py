@@ -2,7 +2,6 @@ from pathlib import Path
 import subprocess
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
 
 from app.config import settings
 from app.database import initialize, record_scan
@@ -15,10 +14,6 @@ app = FastAPI(title=settings.app_name)
 @app.on_event("startup")
 def startup():
     initialize()
-
-
-class ScanRequest(BaseModel):
-    root: str | None = None
 
 
 def media_path_is_safe(path: Path, root: Path) -> bool:
@@ -46,7 +41,7 @@ Test mode is enabled by default and is limited to one approved file.</div>
 <button id="scan">Start scan</button><p id="status">Ready.</p><pre id="results"></pre></section>
 <script>
 const scan=document.querySelector('#scan'),status=document.querySelector('#status'),results=document.querySelector('#results');
-document.querySelector('#root').textContent='Configured media root: '+(await fetch('/api/config').then(r=>r.json())).media_root;
+fetch('/api/config').then(r=>r.json()).then(c=>{document.querySelector('#root').textContent='Configured media root: '+c.media_root;});
 scan.addEventListener('click',async()=>{scan.disabled=true;status.textContent='Scanning…';results.textContent='';
 try{const r=await fetch('/api/scan',{method:'POST'});const data=await r.json();if(!r.ok)throw Error(data.detail||r.statusText);
 status.textContent='Scan complete: '+data.files.length+' media files inspected.';results.textContent=JSON.stringify(data.files,null,2);
