@@ -295,7 +295,7 @@ def get_candidate(candidate_id: int) -> dict | None:
     return dict(row) if row else None
 
 
-def claim_candidate_patch(candidate_id: int) -> dict | None:
+def claim_candidate_patch(candidate_id: int, *, test_mode: bool = False) -> dict | None:
     """Atomically reserve one approved candidate for a single patch operation."""
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -310,6 +310,13 @@ def claim_candidate_patch(candidate_id: int) -> dict | None:
             raise ValueError("An injection for this candidate is already running.")
         if row["patch_status"] == "interrupted":
             raise ValueError("A previous injection was interrupted. Inspect the media and recovery copy before retrying.")
+        if test_mode:
+            other_running = db.execute(
+                "SELECT id FROM subtitle_candidates WHERE patch_status='running' AND id!=? LIMIT 1",
+                (candidate_id,),
+            ).fetchone()
+            if other_running:
+                raise ValueError("Test mode permits only one injection to run at a time.")
         db.execute(
             """UPDATE subtitle_candidates
                SET patch_status='running', patch_started_at=CURRENT_TIMESTAMP,
