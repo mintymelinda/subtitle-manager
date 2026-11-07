@@ -7,40 +7,58 @@ A self-hosted web application for finding missing English subtitles and adding a
 - Scanning and subtitle discovery do not modify media.
 - Downloaded subtitle candidates are staged for review.
 - **Every media modification requires explicit approval for that file.**
-- Test mode is enabled by default and processes exactly one approved file.
+- Test mode is enabled by default and is intended to process exactly one approved file.
 - Patching is transactional: the application builds and validates a working copy, retains a temporary original for recovery, then atomically replaces the source on the same filesystem where possible.
 - No permanent library-wide backups are created. Temporary recovery copies are removed after successful verification in normal mode; test mode retains its backup for inspection.
 - On failure, the original is left in place and temporary recovery files are retained.
 
-## Initial scope
+## Current implementation
 
-- Recursive media scanning within a configured root.
-- Inspection of container streams and subtitle language metadata with FFprobe.
-- Candidate staging and review workflow.
-- MKV subtitle injection with MKVToolNix, without re-encoding existing audio or video.
-- SQLite job and history database.
-- FastAPI web/API service and Docker Compose deployment.
+- Docker Compose and FastAPI service foundation.
+- Recursive scanner for common video formats.
+- FFprobe inspection of container streams.
+- Text subtitle content language detection for supported subtitle codecs; bitmap or too-short tracks are marked unknown rather than assumed English based on metadata.
+- SQLite scan and patch-history schema.
+- Transactional MKV muxing module using MKVToolNix, with explicit approval required at the function boundary and stream-preservation checks.
+- Basic web page to start a scan and inspect its results.
+- GitHub Actions checks for Python compilation, unit tests, and Docker image build.
+
+## Not implemented yet
+
+- OpenSubtitles authentication, search, candidate ranking, and download staging.
+- Per-file approval/rejection controls in the web UI and the API workflow that invokes the patcher.
+- Full job progress, structured logs, and history views.
+- A test-mode coordinator that enforces the one-file limit across a complete user session.
+
+The patching module is not exposed as a web action yet. Media is not modified by scanning.
 
 ## Requirements
 
 - Docker Engine and Docker Compose.
 - A media directory mounted into the container with write permission for approved patch operations.
-- OpenSubtitles API credentials for online subtitle discovery.
+- OpenSubtitles API credentials (provider integration is planned, not active yet).
 
 ## Quick start
 
-1. Copy `.env.example` to `.env` and configure the media root and subtitle provider credentials.
-2. Start the service:
+1. Copy `.env.example` to `.env`.
+2. Set `MEDIA_PATH` to the host media directory you want the container to scan.
+3. Start the service:
 
    ```sh
    docker compose up -d --build
    ```
 
-3. Open http://localhost:8080.
-4. Review scan results and subtitle candidates. Do not approve a patch unless the candidate is correct.
+4. Open http://localhost:8080 and start a scan.
 
-The first-run configuration uses test mode. Test mode will patch no more than one approved media file and will retain its temporary original copy.
+Test mode is enabled by default. The current web interface only scans and inspects; it cannot approve or modify media yet.
 
 ## Development
 
-The initial implementation is being built incrementally. The web service, scanner, media inspection, and transactional MKV patching are kept in separate modules so each safety boundary can be tested independently.
+Run the checks locally with:
+
+```sh
+python -m pip install -r requirements.txt
+python -m compileall -q app tests
+python -m unittest discover -s tests -v
+docker build -t subtitle-manager:test .
+```
