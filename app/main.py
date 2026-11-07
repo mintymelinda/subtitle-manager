@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import subprocess
+import uuid
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -73,8 +74,11 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                         staging_root.mkdir(parents=True, exist_ok=True)
                         extension = Path(file_name).suffix.lower()
                         target = staging_root / f"candidate-{row['id']}{extension}"
-                        temporary = target.with_name(target.name + ".part")
-                        with temporary.open("wb") as staged_file:
+                        temporary = staging_root / f".candidate-{row['id']}-{uuid.uuid4().hex}.part"
+                        descriptor = os.open(
+                            temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+                        )
+                        with os.fdopen(descriptor, "wb") as staged_file:
                             staged_file.write(payload)
                             staged_file.flush()
                             os.fsync(staged_file.fileno())
