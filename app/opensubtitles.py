@@ -6,7 +6,6 @@ for the caller to persist in the application's private staging directory.
 from __future__ import annotations
 
 import json
-import os
 import re
 import struct
 import time
@@ -38,15 +37,13 @@ def compute_moviehash(path: Path) -> str | None:
     with path.open("rb") as media:
         for offset in (0, size - HASH_CHUNK_SIZE):
             media.seek(offset)
-            chunk = media.read(HASH_CHUNK_SIZE)
-            for (word,) in struct.iter_unpack("<Q", chunk):
+            for (word,) in struct.iter_unpack("<Q", media.read(HASH_CHUNK_SIZE)):
                 value = (value + word) & 0xFFFFFFFFFFFFFFFF
     return f"{value:016x}"
 
 
 def filename_query(path: Path) -> str:
-    stem = path.stem
-    return " ".join(re.sub(r"[._]+", " ", stem).split()).lower()
+    return " ".join(re.sub(r"[._]+", " ", path.stem).split()).lower()
 
 
 def _tokens(value: str) -> set[str]:
@@ -60,15 +57,14 @@ def rank_candidate(attributes: dict[str, Any], media_name: str) -> tuple[int, li
         score = 100
         reasons.append("Exact file fingerprint match")
     else:
-        release = str(attributes.get("release") or "")
         wanted = _tokens(media_name)
-        actual = _tokens(release)
+        actual = _tokens(str(attributes.get("release") or ""))
         overlap = len(wanted & actual) / max(1, len(wanted | actual))
         score = round(overlap * 70)
-        if overlap:
-            reasons.append(f"Release-name token overlap: {overlap:.0%}")
-        else:
-            reasons.append("No exact fingerprint or meaningful release-name overlap")
+        reasons.append(
+            f"Release-name token overlap: {overlap:.0%}" if overlap
+            else "No exact fingerprint or meaningful release-name overlap"
+        )
     if attributes.get("from_trusted"):
         score += 5
         reasons.append("Trusted uploader")
@@ -103,6 +99,7 @@ class OpenSubtitlesClient:
         self._token: str | None = None
         self._opener = opener or urllib.request.urlopen
         self._sleep = sleeper
+        self.remaining_downloads: int | None = None
 
     def _headers(self, token: str | None = None) -> dict[str, str]:
         headers = {
@@ -125,7 +122,11 @@ class OpenSubtitlesClient:
     ) -> dict[str, Any]:
         url = f"{self.base_url}{endpoint}"
         if params:
-            canonical = {key: str(value).lower() for key, value in params.items() if value is not None and value != ""}
+            canonical = {
+                key: str(value).lower()
+                for key, value in params.items()
+                if value is not None and value != ""
+            }
             url += "?" + urllib.parse.urlencode(sorted(canonical.items()))
         headers = self._headers(token)
         data = None
@@ -141,7 +142,11 @@ class OpenSubtitlesClient:
                     self._sleep(1)
                 if endpoint == "/login" and payload.get("base_url"):
                     returned = str(payload["base_url"]).rstrip("/")
-                    if returned.startswith("https://") and returned.endswith("opensubtitles.com"):
+                    parsed = urllib.parse.urlparse(returned)
+                    if parsed.scheme == "https" and parsed.hostname and (
+                        parsed.hostname == "opensubtitles.com"
+                        or parsed.hostname.endswith(".opensubtitles.com")
+                    ):
                         self.base_url = returned
                 return payload
         except urllib.error.HTTPError as exc:
@@ -160,7 +165,7 @@ class OpenSubtitlesClient:
             if exc.code >= 500:
                 raise OpenSubtitlesError("OpenSubtitles is temporarily unavailable.") from None
             raise OpenSubtitlesError(f"OpenSubtitles request failed (HTTP {exc.code}).") from None
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
             raise OpenSubtitlesError("Could not reach OpenSubtitles or parse its response.") from None
 
     def login(self) -> str | None:
@@ -177,12 +182,20 @@ class OpenSubtitlesClient:
         self._token = token
         return token
 
-    def search(self, media_path: Path) -> list[dict[str, Any]]:
-        query = filename_query(media_path)
-        moviehash = compute_moviehash(media_path)
+    def search(self, media_path: Path, metadata: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        metadata = metadata or {}
+        title = str(metadata.get("title") or "").strip()
+        year = str(metadata.get("year") or "").strip()
+        query = " ".join(part for part in (title, year) if part) or filename_query(media_path)
         params: dict[str, Any] = {"languages": "en", "query": query}
+        moviehash = compute_moviehash(media_path)
         if moviehash:
             params["moviehash"] = moviehash
+        imdb_id = str(metadata.get("imdb_id") or "").strip()
+        if imdb_id:
+            imdb_id = re.sub(r"^tt", "", imdb_id, flags=re.IGNORECASE).lstrip("0")
+            if imdb_id.isdigit():
+                params["imdb_id"] = imdb_id
         result = self._json_request("/subtitles", params=params)
         candidates: list[dict[str, Any]] = []
         for item in result.get("data", []):
@@ -250,7 +263,7 @@ class OpenSubtitlesClient:
             raise OpenSubtitlesError("Subtitle download failed.") from None
         if len(payload) > MAX_DOWNLOAD_BYTES:
             raise OpenSubtitlesError("Subtitle download exceeded the 25 MiB safety limit.")
-        if payload.startswith(b"PK\x03\x04"):
+        if payload.startswith(b"PK\\x03\\x04"):
             suggested_name, payload = self._extract_zip(payload, suggested_name)
         extension = Path(suggested_name).suffix.lower()
         if extension not in SUPPORTED_EXTENSIONS:
@@ -258,7 +271,8 @@ class OpenSubtitlesClient:
         if not payload or payload.lstrip().lower().startswith((b"<!doctype html", b"<html")):
             raise OpenSubtitlesError("Downloaded content is not a subtitle file.")
         remaining = result.get("remaining")
-        return suggested_name, payload, int(remaining) if remaining is not None else None
+        self.remaining_downloads = int(remaining) if remaining is not None else None
+        return suggested_name, payload, self.remaining_downloads
 
     @staticmethod
     def _extract_zip(payload: bytes, fallback_name: str) -> tuple[str, bytes]:
