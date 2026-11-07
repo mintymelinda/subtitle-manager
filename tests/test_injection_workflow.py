@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,38 @@ from app.database import (
 
 
 class InjectionApprovalDatabaseTests(unittest.TestCase):
+    def test_initialize_migrates_existing_issue_two_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_path = settings.database_path
+            database_path = Path(directory) / "legacy.sqlite3"
+            settings.database_path = str(database_path)
+            try:
+                with sqlite3.connect(database_path) as db:
+                    db.executescript("""
+                        CREATE TABLE media_files (
+                            id INTEGER PRIMARY KEY, relative_path TEXT UNIQUE,
+                            size INTEGER, modified_at REAL, status TEXT,
+                            last_scanned_at TEXT
+                        );
+                        CREATE TABLE subtitle_candidates (
+                            id INTEGER PRIMARY KEY, media_relative_path TEXT,
+                            status TEXT
+                        );
+                        CREATE TABLE patch_history (
+                            id INTEGER PRIMARY KEY, relative_path TEXT,
+                            subtitle_name TEXT, status TEXT, details TEXT,
+                            created_at TEXT
+                        );
+                    """)
+                initialize()
+                with sqlite3.connect(database_path) as db:
+                    candidate_columns = {row[1] for row in db.execute("PRAGMA table_info(subtitle_candidates)")}
+                    history_columns = {row[1] for row in db.execute("PRAGMA table_info(patch_history)")}
+                self.assertTrue({"review_decision", "patch_status", "patch_started_at", "patch_completed_at"} <= candidate_columns)
+                self.assertTrue({"candidate_id", "backup_path"} <= history_columns)
+            finally:
+                settings.database_path = old_path
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.old_path = settings.database_path
