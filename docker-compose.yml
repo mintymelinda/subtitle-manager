@@ -1,0 +1,16 @@
+services:
+  subtitle-manager:
+    build: .
+    container_name: subtitle-manager
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ${MEDIA_PATH:-./media}:/media:rw
+      - ./data:/app/data
+    environment:
+      MEDIA_ROOT: /media
+      DATABASE_PATH: /app/data/subtitle-manager.sqlite3
+      TEST_MODE: ${TEST_MODE:-true}
