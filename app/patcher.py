@@ -1,4 +1,6 @@
 """Transactional MKV subtitle injection with same-directory recovery."""
+import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -99,7 +101,7 @@ def _restore_from_backup(backup: Path, source: Path) -> None:
         rollback.unlink(missing_ok=True)
 
 
-def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool = True, expected_size: int | None = None, expected_mtime: float | None = None) -> dict:
+def _patch_mkv_unlocked(source: Path, subtitle: Path, *, approved: bool, test_mode: bool = True, expected_size: int | None = None, expected_mtime: float | None = None) -> dict:
     """Patch one explicitly approved MKV. Test mode always retains the recovery copy."""
     if approved is not True:
         raise PermissionError("Explicit approval for this media file is required")
@@ -196,3 +198,23 @@ def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool =
         raise
     finally:
         working.unlink(missing_ok=True)
+
+
+def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool = True, expected_size: int | None = None, expected_mtime: float | None = None) -> dict:
+    """Serialize patch operations by canonical media path across app workers."""
+    if approved is not True:
+        raise PermissionError("Explicit approval for this media file is required")
+    canonical = Path(source).resolve(strict=True)
+    lock_root = Path(tempfile.gettempdir()) / "subtitle-manager-locks"
+    lock_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_name = hashlib.sha256(os.fsencode(str(canonical))).hexdigest() + ".lock"
+    lock_path = lock_root / lock_name
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return _patch_mkv_unlocked(canonical, subtitle, approved=approved,
+                                   test_mode=test_mode, expected_size=expected_size,
+                                   expected_mtime=expected_mtime)
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
