@@ -133,6 +133,14 @@ def save_candidate(media_relative_path: str, media_size: int, media_modified_at:
                 match_reasons=excluded.match_reasons,
                 status=CASE WHEN subtitle_candidates.status IN ('staged', 'rejected_non_english')
                             THEN subtitle_candidates.status ELSE 'discovered' END,
+                review_decision=CASE
+                    WHEN subtitle_candidates.media_size != excluded.media_size
+                      OR subtitle_candidates.media_modified_at != excluded.media_modified_at
+                    THEN 'pending' ELSE subtitle_candidates.review_decision END,
+                review_updated_at=CASE
+                    WHEN subtitle_candidates.media_size != excluded.media_size
+                      OR subtitle_candidates.media_modified_at != excluded.media_modified_at
+                    THEN NULL ELSE subtitle_candidates.review_updated_at END,
                 updated_at=CURRENT_TIMESTAMP
         """, (
             media_relative_path, media_size, media_modified_at,
