@@ -31,16 +31,25 @@ A self-hosted web application for finding missing English subtitles and adding a
 - Before replacement, the working MKV is checked for unchanged video/audio streams, retained existing subtitle tracks, and a newly added English subtitle track. The output is verified again after atomic replacement.
 - Original file mode and timestamps are copied to the replacement; ownership is preserved where container permissions allow. Same-directory recovery copies remain available after failures and in test mode.
 - Responsive web dashboard to start scans, review persisted media inspection and track summaries, preview or download staged candidates, and record explicit per-file candidate approval or rejection.
+- Persistent scan, review, and injection jobs with queued/running/completed/failed/interrupted states, phase/current-file reporting, progress counters, and per-file outcomes in SQLite.
+- Live dashboard polling for active job progress and a recent activity/history view that survives application restarts.
+- Structured JSON application logs with UTC timestamps, event/job/candidate context, exception details, and recursive redaction of API keys, passwords, tokens, authorization headers, and cookies.
 - Candidate review decisions are stored in SQLite, tied to the exact media path and scanned file size/mtime. Only one candidate can be approved for a media file at a time; changed media invalidates the previous decision.
 - GitHub Actions checks for Python compilation, unit tests, and Docker image build.
 
 ## Not implemented yet
 
 - API workflow that invokes the patcher after candidate approval (approval currently records the selected candidate only; it does not modify media).
-- Full job progress, structured logs, and history views.
+
 - A test-mode coordinator that enforces the one-file limit across a complete user session.
 
-The patching module is not exposed as a web action yet. Scanning, candidate review, approval, and candidate downloads do not modify media.
+
+
+## Jobs, progress, and logs
+
+Scan and approved-injection requests return a `job_id` immediately and continue in the background. Poll `GET /api/jobs/{job_id}` for state, phase, current file, counters, and per-file results; `GET /api/jobs` lists recent jobs. The dashboard polls active jobs and displays recent history. Candidate approvals and rejections are also written to the job history. Job records and per-file outcomes are stored in SQLite and remain available after restart. Jobs left queued or running during a restart are marked `interrupted`; they are never reported as successful or automatically replayed. Interrupted injections still require manual media/recovery-copy inspection.
+
+Application logs are emitted as one JSON object per line to standard output, suitable for Docker log collection. Secret-like fields and common credential assignments are redacted. Do not enable verbose HTTP wire logging in production because provider request headers may contain credentials.
 
 ## OpenSubtitles setup
 
