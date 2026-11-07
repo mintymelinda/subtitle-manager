@@ -280,9 +280,13 @@ def inject_candidate(candidate_id: int, request: InjectRequest):
     relative = Path(row["media_relative_path"])
     if relative.is_absolute() or ".." in relative.parts:
         raise HTTPException(status_code=400, detail="Unsafe media path.")
-    source = media_root / relative
+    source = media_root
     try:
-        if source.is_symlink() or not source.resolve(strict=True).is_relative_to(media_root):
+        for part in relative.parts:
+            source = source / part
+            if source.is_symlink():
+                raise HTTPException(status_code=400, detail="Symlink components are not allowed in media paths.")
+        if not source.resolve(strict=True).is_relative_to(media_root):
             raise HTTPException(status_code=400, detail="Media path escapes the configured media root.")
         source = source.resolve(strict=True)
     except (OSError, RuntimeError):
@@ -295,15 +299,25 @@ def inject_candidate(candidate_id: int, request: InjectRequest):
     staging_root = Path(settings.subtitle_staging_path).resolve(strict=True)
     staged_value = Path(row.get("staged_path") or "")
     try:
-        if staged_value.is_symlink():
-            raise HTTPException(status_code=400, detail="Staged subtitle path cannot be a symlink.")
+        if not staged_value.is_absolute():
+            raise HTTPException(status_code=404, detail="Staged subtitle file is unavailable.")
+        staged_relative = staged_value.relative_to(staging_root)
+        staged_component = staging_root
+        for part in staged_relative.parts:
+            staged_component = staged_component / part
+            if staged_component.is_symlink():
+                raise HTTPException(status_code=400, detail="Symlink components are not allowed in staging paths.")
         subtitle = staged_value.resolve(strict=True)
         if not subtitle.is_relative_to(staging_root) or not subtitle.is_file():
             raise HTTPException(status_code=404, detail="Staged subtitle file is unavailable.")
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         raise HTTPException(status_code=404, detail="Staged subtitle file is unavailable.")
+    if row["language"].strip().lower() not in {"en", "eng", "english"}:
+        raise HTTPException(status_code=415, detail="Only English subtitle candidates can be injected.")
     if subtitle.suffix.lower() not in {".srt", ".ass", ".ssa", ".sup", ".sub"}:
         raise HTTPException(status_code=415, detail="Unsupported subtitle format.")
+    if Path(row["file_name"]).suffix.lower() != subtitle.suffix.lower():
+        raise HTTPException(status_code=409, detail="Staged subtitle format does not match the reviewed candidate.")
     try:
         claimed = claim_candidate_patch(candidate_id)
     except ValueError as exc:
