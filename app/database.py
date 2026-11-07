@@ -293,6 +293,8 @@ def claim_candidate_patch(candidate_id: int) -> dict | None:
             raise ValueError("This candidate has already been injected.")
         if row["patch_status"] == "running":
             raise ValueError("An injection for this candidate is already running.")
+        if row["patch_status"] == "interrupted":
+            raise ValueError("A previous injection was interrupted. Inspect the media and recovery copy before retrying.")
         db.execute(
             """UPDATE subtitle_candidates
                SET patch_status='running', patch_started_at=CURRENT_TIMESTAMP,
