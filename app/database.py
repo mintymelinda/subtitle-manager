@@ -92,6 +92,40 @@ def initialize():
         if "backup_path" not in history_columns:
             db.execute("ALTER TABLE patch_history ADD COLUMN backup_path TEXT")
         db.executescript("""
+        CREATE TABLE IF NOT EXISTS jobs (
+            id INTEGER PRIMARY KEY,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            phase TEXT,
+            current_file TEXT,
+            total INTEGER NOT NULL DEFAULT 0,
+            completed INTEGER NOT NULL DEFAULT 0,
+            succeeded INTEGER NOT NULL DEFAULT 0,
+            failed INTEGER NOT NULL DEFAULT 0,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS job_items (
+            id INTEGER PRIMARY KEY,
+            job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            media_path TEXT NOT NULL,
+            candidate_id INTEGER,
+            status TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            review_decision TEXT,
+            patch_status TEXT,
+            error TEXT,
+            details_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+        CREATE INDEX IF NOT EXISTS idx_job_items_job ON job_items(job_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_job_items_job_media ON job_items(job_id, media_path);
         CREATE INDEX IF NOT EXISTS idx_subtitle_candidates_media
             ON subtitle_candidates(media_relative_path);
         CREATE INDEX IF NOT EXISTS idx_subtitle_candidates_status
@@ -377,5 +411,134 @@ def recover_interrupted_patches() -> int:
                    ) VALUES (?, ?, 'interrupted', ?, ?)""",
                 (row["media_relative_path"], row["file_name"],
                  json.dumps(details), row["id"]),
+            )
+        return len(rows)
+
+
+def create_job(kind: str, total: int = 0, metadata: dict | None = None) -> dict:
+    if kind not in {"scan", "inject", "review"}:
+        raise ValueError("Unsupported job type.")
+    with connect() as db:
+        cursor = db.execute(
+            """INSERT INTO jobs(kind, status, total, metadata_json)
+               VALUES (?, 'queued', ?, ?)""",
+            (kind, max(0, int(total)), json.dumps(metadata or {})),
+        )
+        row = db.execute("SELECT * FROM jobs WHERE id=?", (cursor.lastrowid,)).fetchone()
+        return _job_row(row)
+
+
+def _job_row(row):
+    if row is None:
+        return None
+    item = dict(row)
+    item["metadata"] = json.loads(item.pop("metadata_json", "{}") or "{}")
+    return item
+
+
+def start_job(job_id: int):
+    with connect() as db:
+        db.execute(
+            """UPDATE jobs SET status='running', started_at=CURRENT_TIMESTAMP,
+               updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='queued'""",
+            (job_id,),
+        )
+
+
+def update_job_progress(job_id: int, *, phase: str | None = None,
+                        current_file: str | None = None, completed: int | None = None,
+                        succeeded: int | None = None, failed: int | None = None,
+                        total: int | None = None):
+    assignments = ["updated_at=CURRENT_TIMESTAMP"]
+    values = []
+    for column, value in (("phase", phase), ("current_file", current_file),
+                          ("completed", completed), ("succeeded", succeeded),
+                          ("failed", failed), ("total", total)):
+        if value is not None:
+            assignments.append(f"{column}=?")
+            values.append(value)
+    values.append(job_id)
+    with connect() as db:
+        db.execute(f"UPDATE jobs SET {', '.join(assignments)} WHERE id=?", values)
+
+
+def record_job_item(job_id: int, *, media_path: str, status: str,
+                    phase: str, candidate_id: int | None = None,
+                    review_decision: str | None = None,
+                    patch_status: str | None = None, error: str | None = None,
+                    details: dict | None = None):
+    with connect() as db:
+        db.execute(
+            """INSERT INTO job_items(job_id, media_path, candidate_id, status, phase,
+                   review_decision, patch_status, error, details_json, completed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ?='running' THEN NULL ELSE CURRENT_TIMESTAMP END)
+               ON CONFLICT(job_id, media_path) DO UPDATE SET
+                   candidate_id=COALESCE(excluded.candidate_id, job_items.candidate_id),
+                   status=excluded.status, phase=excluded.phase,
+                   review_decision=COALESCE(excluded.review_decision, job_items.review_decision),
+                   patch_status=COALESCE(excluded.patch_status, job_items.patch_status),
+                   error=excluded.error, details_json=excluded.details_json,
+                   completed_at=excluded.completed_at""",
+            (job_id, media_path, candidate_id, status, phase,
+             review_decision, patch_status, (error or "")[:500],
+             json.dumps(details or {}), status),
+        )
+
+
+def finish_job(job_id: int, status: str, error: str | None = None):
+    if status not in {"completed", "failed", "cancelled", "interrupted"}:
+        raise ValueError("Invalid terminal job state.")
+    with connect() as db:
+        db.execute(
+            """UPDATE jobs SET status=?, error=?, finished_at=CURRENT_TIMESTAMP,
+               updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('queued','running')""",
+            (status, (error or "")[:500] or None, job_id),
+        )
+
+
+def get_job(job_id: int) -> dict | None:
+    with connect() as db:
+        row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            return None
+        result = _job_row(row)
+        result["items"] = [
+            dict(item) for item in db.execute(
+                "SELECT * FROM job_items WHERE job_id=? ORDER BY id", (job_id,)
+            ).fetchall()
+        ]
+        for item in result["items"]:
+            item["details"] = json.loads(item.pop("details_json", "{}") or "{}")
+        return result
+
+
+def list_jobs(limit: int = 25) -> list[dict]:
+    with connect() as db:
+        rows = db.execute(
+            "SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (max(1, min(100, limit)),)
+        ).fetchall()
+        results = []
+        for row in rows:
+            item = _job_row(row)
+            item["items"] = db.execute(
+                "SELECT COUNT(*) FROM job_items WHERE job_id=?", (item["id"],)
+            ).fetchone()[0]
+            results.append(item)
+        return results
+
+
+def recover_interrupted_jobs() -> int:
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        rows = db.execute(
+            "SELECT id, kind FROM jobs WHERE status IN ('queued','running')"
+        ).fetchall()
+        for row in rows:
+            db.execute("UPDATE job_items SET status='interrupted', phase='recovery', error='Application restarted before this file finished.', completed_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='running'", (row["id"],))
+            db.execute(
+                """UPDATE jobs SET status='interrupted',
+                   error='Application restarted before this job reached a terminal state.',
+                   finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                (row["id"],),
             )
         return len(rows)

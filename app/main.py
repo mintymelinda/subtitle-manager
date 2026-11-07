@@ -3,15 +3,19 @@ import os
 import subprocess
 import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse, FileResponse, PlainTextResponse
 
 from app.config import settings
+from app.observability import configure_logging, logger
+
 from app.database import (
     initialize, record_scan, save_candidate, mark_candidate_staged,
     mark_candidate_error, list_candidates, list_media_files, set_candidate_decision,
     get_candidate, claim_candidate_patch, finish_candidate_patch, recover_interrupted_patches,
+    create_job, start_job, update_job_progress, record_job_item, finish_job,
+    get_job, list_jobs, recover_interrupted_jobs,
 )
 from app.media import inspect_media
 from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError, assess_subtitle_payload
@@ -35,8 +39,11 @@ class InjectRequest(BaseModel):
 
 @app.on_event("startup")
 def startup():
+    configure_logging()
     initialize()
-    recover_interrupted_patches()
+    patches = recover_interrupted_patches()
+    jobs = recover_interrupted_jobs()
+    logger.warning("startup_recovery", extra={"event":"startup_recovery","status":"interrupted","error_type":f"patches={patches},jobs={jobs}"})
 
 
 def media_path_is_safe(path: Path, root: Path) -> bool:
@@ -53,7 +60,9 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
     staging_root = Path(settings.subtitle_staging_path).resolve()
     if staging_root == media_root or staging_root.is_relative_to(media_root):
         raise OpenSubtitlesError("Subtitle staging directory must be outside the media library.")
+    logger.info("opensubtitles_search_started", extra={"event":"opensubtitles_search_started","media_path":relative_media_path,"phase":"discovery"})
     candidates = client.search(path, metadata)
+    logger.info("opensubtitles_search_completed", extra={"event":"opensubtitles_search_completed","media_path":relative_media_path,"phase":"discovery","status":f"{len(candidates)} candidates"})
     summary = {"status": "no_candidates" if not candidates else "complete",
                "found": len(candidates), "staged": 0, "candidates": []}
     limit = max(0, min(5, int(settings.open_subtitles_max_candidates_per_file)))
@@ -96,9 +105,11 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                         os.replace(temporary, target)
                         mark_candidate_staged(row["id"], str(target), remaining, assessment)
                         status = "staged"
+                        logger.info("subtitle_candidate_staged", extra={"event":"subtitle_candidate_staged","candidate_id":row["id"],"media_path":relative_media_path,"phase":"download","status":"staged"})
                 except OpenSubtitlesError as exc:
                     mark_candidate_error(row["id"], str(exc))
                     status = "download_failed"
+                    logger.warning("subtitle_candidate_download_failed", extra={"event":"subtitle_candidate_download_failed","candidate_id":row["id"],"media_path":relative_media_path,"phase":"download","error_type":type(exc).__name__})
                 except OSError:
                     mark_candidate_error(row["id"], "Could not write the staged subtitle file.")
                     status = "download_failed"
@@ -143,7 +154,8 @@ input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-
 <p>Find missing English subtitles and review candidates before changing media.</p>
 <div class="notice"><strong>Safety:</strong> scanning and downloads never change media. Injection requires a separately approved candidate and a second confirmation. Current mode: <strong id="mode">loading…</strong>.</div>
 <section class="panel"><h2>Media scan</h2><label for="scan-path">Folder to scan</label><input id="scan-path" type="text" value="/media"><p>Enter a folder within the mounted /media directory.</p>
-<button id="scan">Start scan</button><p id="status">Ready.</p><div id="scan-results"></div></section>
+<button id="scan">Start scan</button><p id="status">Ready.</p><div id="scan-results"></div><div id="job-progress" class="candidate" aria-live="polite">No active job.</div></section>
+<section class="panel"><h2>Recent activity and processing history</h2><div id="job-history">Loading job history…</div></section>
 <section class="panel"><h2>Subtitle candidate review</h2><p>Every candidate is shown under its exact media file. Inspect the release, match rationale, and subtitle content before deciding.</p><div id="candidate-list">Loading saved candidates…</div></section>
 <script>
 const scanButton=document.querySelector("#scan"),status=document.querySelector("#status"),scanResults=document.querySelector("#scan-results"),candidateList=document.querySelector("#candidate-list");
@@ -162,11 +174,14 @@ if(c.status==="staged"){const links=el("div",undefined,"actions"),preview=el("a"
 if(c.status==="staged"&&c.review_decision==="pending"&&!c.is_stale){const actions=el("div",undefined,"actions"),approve=el("button","Approve this candidate"),reject=el("button","Reject this candidate");reject.className="secondary";approve.addEventListener("click",()=>decide(c.id,"approved",approve));reject.addEventListener("click",()=>decide(c.id,"rejected",reject));actions.append(approve,reject);card.append(actions);}
 if(c.status==="staged"&&c.review_decision==="approved"&&!c.is_stale&&c.patch_status!=="patched"&&c.patch_status!=="running"&&c.patch_status!=="interrupted"){const injectButton=el("button",c.patch_status==="failed"?"Retry injection":"Inject approved subtitle");injectButton.addEventListener("click",()=>inject(c.id,injectButton));card.append(injectButton);}
 candidateList.append(card);}}
-async function decide(id,decision,button){if(!confirm((decision==="approved"?"Approve":"Reject")+" this subtitle for this exact media file?"))return;button.disabled=true;try{const r=await fetch("/api/candidates/"+id+"/decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);await loadCandidates();}catch(e){alert("Could not save decision: "+e.message);button.disabled=false;}}
-async function inject(id,button){const mode=document.querySelector("#mode").textContent;const warning=mode==="TEST MODE"?"TEST MODE will replace this MKV and retain a recovery copy beside it.":"LIVE MODE will replace this MKV; its recovery copy is deleted only after post-replacement verification.";if(!confirm(warning+"\n\nInject the explicitly approved subtitle into this exact media file now?"))return;button.disabled=true;try{const r=await fetch("/api/candidates/"+id+"/inject",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirm:true})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);alert("Subtitle injection completed. "+(d.backup?"Recovery copy retained at: "+d.backup:"Temporary recovery copy removed after verification."));await loadCandidates();}catch(e){alert("Injection failed: "+e.message);button.disabled=false;await loadCandidates();}}
+async function decide(id,decision,button){if(!confirm((decision==="approved"?"Approve":"Reject")+" this subtitle for this exact media file?"))return;button.disabled=true;try{const r=await fetch("/api/candidates/"+id+"/decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);await loadCandidates();}catch(e){alert("Could not save decision: "+e.message);button.disabled=false;}finally{refreshJobHistory();}}
+async function inject(id,button){const mode=document.querySelector("#mode").textContent;const warning=mode==="TEST MODE"?"TEST MODE will replace this MKV and retain a recovery copy beside it.":"LIVE MODE will replace this MKV; its recovery copy is deleted only after post-replacement verification.";if(!confirm(warning+"\n\nInject the explicitly approved subtitle into this exact media file now?"))return;button.disabled=true;try{const r=await fetch("/api/candidates/"+id+"/inject",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirm:true})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);trackJob(d.job_id);}catch(e){alert("Could not start injection: "+e.message);button.disabled=false;await loadCandidates();}}
 fetch("/api/config").then(r=>r.json()).then(c=>{document.querySelector("#mode").textContent=c.test_mode?"TEST MODE":"LIVE MODE";}).catch(()=>{document.querySelector("#mode").textContent="unknown";});
-scanButton.addEventListener("click",async()=>{scanButton.disabled=true;status.textContent="Scanning media and staging candidates…";scanResults.replaceChildren();try{const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:document.querySelector("#scan-path").value})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);status.textContent="Scan complete: "+d.files.length+" media files inspected.";renderScan(d.files);await loadCandidates();}catch(e){status.textContent="Scan failed: "+e.message;}finally{scanButton.disabled=false;}});
+scanButton.addEventListener("click",async()=>{scanButton.disabled=true;status.textContent="Starting scan…";scanResults.replaceChildren();try{const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:document.querySelector("#scan-path").value})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);status.textContent="Scan queued: "+d.total+" media files.";trackJob(d.job_id);}catch(e){status.textContent="Could not start scan: "+e.message;scanButton.disabled=false;}});
+async function refreshJobHistory(){try{const r=await fetch("/api/jobs?limit=20");const d=await r.json();const host=document.querySelector("#job-history");host.replaceChildren();if(!d.jobs.length){host.append(el("p","No processing history yet."));return;}for(const j of d.jobs){const card=el("article",undefined,"candidate");card.append(el("strong","Job #"+j.id+" · "+j.kind+" · "+j.status));line(card,"Progress",j.completed+"/"+j.total+" · "+j.succeeded+" succeeded · "+j.failed+" failed");line(card,"Phase",j.phase||"—");line(card,"Current file",j.current_file||"—");if(j.error)card.append(el("p",j.error,"warning"));const detailResponse=await fetch("/api/jobs/"+j.id);if(detailResponse.ok){const detail=await detailResponse.json();for(const item of detail.items||[]){const outcome=el("p",item.status+" · "+item.media_path+" · "+item.phase);if(item.review_decision)outcome.append(document.createTextNode(" · review: "+item.review_decision));if(item.patch_status)outcome.append(document.createTextNode(" · patch: "+item.patch_status));if(item.error)outcome.append(document.createTextNode(" · "+item.error));card.append(outcome);}}host.append(card);}}catch(e){document.querySelector("#job-history").textContent="Could not load history: "+e.message;}}
+async function trackJob(id){const panel=document.querySelector("#job-progress");async function poll(){try{const r=await fetch("/api/jobs/"+id);const j=await r.json();if(!r.ok)throw Error(j.detail||r.statusText);panel.replaceChildren();panel.append(el("strong","Job #"+j.id+" · "+j.kind+" · "+j.status));line(panel,"Progress",j.completed+"/"+j.total+" · "+j.succeeded+" succeeded · "+j.failed+" failed");line(panel,"Phase",j.phase||"queued");line(panel,"Current file",j.current_file||"—");if(j.error)panel.append(el("p",j.error,"warning"));await refreshJobHistory();if(["completed","failed","cancelled","interrupted"].includes(j.status)){scanButton.disabled=false;status.textContent=j.kind==="scan"?"Scan "+j.status+".":"Injection "+j.status+".";await loadCandidates();return;}setTimeout(poll,1000);}catch(e){panel.textContent="Could not read job status: "+e.message;scanButton.disabled=false;}}poll();}
 loadCandidates().catch(e=>candidateList.textContent="Could not load candidates: "+e.message);
+refreshJobHistory();
 fetch("/api/media").then(r=>r.json()).then(d=>renderScan(d.media.map(m=>({path:m.relative_path,...m.inspection,has_verified_english_subtitle:m.has_verified_english_subtitle})))).catch(()=>{});
 </script></body></html>""")
 
@@ -265,11 +280,62 @@ def candidate_decision(candidate_id: int, request: CandidateDecisionRequest):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if decision is None:
         raise HTTPException(status_code=404, detail="Candidate not found.")
-    return decision
+    job = create_job("review", total=1, metadata={"decision":request.decision})
+    start_job(job["id"])
+    record_job_item(job["id"], media_path=row["media_relative_path"], status="completed",
+                    phase="review", candidate_id=candidate_id,
+                    review_decision=request.decision)
+    update_job_progress(job["id"], phase="review", completed=1, succeeded=1)
+    finish_job(job["id"], "completed")
+    logger.info("candidate_reviewed", extra={"event":"candidate_reviewed",
+                "candidate_id":candidate_id,"media_path":row["media_relative_path"],
+                "phase":"review","status":request.decision})
+    return {**decision, "job_id":job["id"]}
+
+
+def _run_injection_job(job_id: int, candidate_id: int, row: dict,
+                       source: Path, subtitle: Path):
+    start_job(job_id)
+    update_job_progress(job_id, phase="muxing", current_file=row["media_relative_path"], total=1)
+    logger.info("injection_started", extra={"event":"injection_started","job_id":job_id,
+                "candidate_id":candidate_id,"media_path":row["media_relative_path"],"phase":"muxing"})
+    pattern = f".{source.name}.recovery-*.bak"
+    before = set(source.parent.glob(pattern))
+    try:
+        result = patch_mkv(source, subtitle, approved=True, test_mode=settings.test_mode,
+                           expected_size=row["media_size"], expected_mtime=row["media_modified_at"])
+        finish_candidate_patch(candidate_id, "patched", result, result.get("backup"))
+        record_job_item(job_id, media_path=row["media_relative_path"], status="completed",
+                        phase="verified", candidate_id=candidate_id, review_decision="approved",
+                        patch_status="patched", details=result)
+        update_job_progress(job_id, phase="completed", completed=1, succeeded=1)
+        finish_job(job_id, "completed")
+        logger.info("injection_completed", extra={"event":"injection_completed","job_id":job_id,
+                    "candidate_id":candidate_id,"media_path":row["media_relative_path"],
+                    "phase":"verified","status":"patched"})
+        return result
+    except Exception as exc:
+        backups = set(source.parent.glob(pattern)) - before
+        backup = str(max(backups, key=lambda p:p.stat().st_mtime_ns)) if backups else None
+        error = f"{type(exc).__name__}: {str(exc)[:400]}"
+        try:
+            finish_candidate_patch(candidate_id, "failed", {"error":error,"recovery_path":backup}, backup)
+        except Exception:
+            logger.exception("patch_history_write_failed", extra={"event":"patch_history_write_failed",
+                             "job_id":job_id,"candidate_id":candidate_id})
+        record_job_item(job_id, media_path=row["media_relative_path"], status="failed",
+                        phase="injection", candidate_id=candidate_id, review_decision="approved",
+                        patch_status="failed", error=error, details={"recovery_path":backup})
+        update_job_progress(job_id, phase="failed", completed=1, failed=1)
+        finish_job(job_id, "failed", error)
+        logger.exception("injection_failed", extra={"event":"injection_failed","job_id":job_id,
+                         "candidate_id":candidate_id,"media_path":row["media_relative_path"],
+                         "phase":"injection","error_type":type(exc).__name__})
+        return None
 
 
 @app.post("/api/candidates/{candidate_id}/inject")
-def inject_candidate(candidate_id: int, request: InjectRequest):
+def inject_candidate(candidate_id: int, request: InjectRequest, background_tasks: BackgroundTasks = None):
     if request.confirm is not True:
         raise HTTPException(status_code=400, detail="Explicit confirmation is required for media modification.")
     row = get_candidate(candidate_id)
@@ -329,34 +395,85 @@ def inject_candidate(candidate_id: int, request: InjectRequest):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if claimed is None:
         raise HTTPException(status_code=404, detail="Candidate not found.")
-    recovery_pattern = f".{source.name}.recovery-*.bak"
-    recoveries_before = set(source.parent.glob(recovery_pattern))
-    try:
-        result = patch_mkv(source, subtitle, approved=True, test_mode=settings.test_mode, expected_size=row["media_size"], expected_mtime=row["media_modified_at"])
-    except Exception as exc:
-        recovery_files = set(source.parent.glob(recovery_pattern)) - recoveries_before
-        recovery_path = str(max(recovery_files, key=lambda p: p.stat().st_mtime_ns)) if recovery_files else None
-        safe_error = f"{type(exc).__name__}: {str(exc)[:400]}"
-        try:
-            finish_candidate_patch(
-                candidate_id, "failed",
-                {"error": safe_error, "recovery_path": recovery_path}, recovery_path,
-            )
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail="Subtitle injection failed. The original was preserved or restored where possible; inspect the retained recovery file and application logs.") from exc
+    job = create_job("inject", total=1, metadata={"candidate_id":candidate_id,
+                      "test_mode":bool(settings.test_mode)})
+    record_job_item(job["id"], media_path=row["media_relative_path"], status="running",
+                    phase="queued", candidate_id=candidate_id, review_decision="approved",
+                    patch_status="running")
+    if background_tasks is None:
+        result = _run_injection_job(job["id"], candidate_id, row, source, subtitle)
+        if result is None:
+            raise HTTPException(status_code=500, detail="Subtitle injection failed. Inspect job history and retained recovery files.")
+        return {"candidate_id":candidate_id,"media":row["media_relative_path"],
+                "test_mode":settings.test_mode,**result}
+    background_tasks.add_task(_run_injection_job, job["id"], candidate_id, row, source, subtitle)
+    logger.info("injection_queued", extra={"event":"injection_queued","job_id":job["id"],
+                "candidate_id":candidate_id,"media_path":row["media_relative_path"],"phase":"queued"})
+    return {"job_id":job["id"],"candidate_id":candidate_id,"status":"queued",
+            "test_mode":settings.test_mode}
 
-    finish_candidate_patch(candidate_id, "patched", result, result.get("backup"))
-    return {
-        "candidate_id": candidate_id,
-        "media": row["media_relative_path"],
-        "test_mode": settings.test_mode,
-        **result,
-    }
+
+def _scan_worker(job_id: int, root: Path, paths: list[Path]):
+    start_job(job_id)
+    try:
+        update_job_progress(job_id, phase="inspecting", total=len(paths))
+        client = None
+        if settings.open_subtitles_api_key.strip():
+            client = OpenSubtitlesClient(settings.open_subtitles_api_key,
+                                         settings.open_subtitles_username,
+                                         settings.open_subtitles_password)
+        completed = succeeded = failed = 0
+        for path in paths:
+            if not media_path_is_safe(path, root):
+                continue
+            relative_path = str(path.relative_to(root))
+            media_relative_path = str(path.relative_to(Path(settings.media_root).resolve()))
+            update_job_progress(job_id, phase="inspecting", current_file=media_relative_path)
+            record_job_item(job_id, media_path=media_relative_path, status="running", phase="inspecting")
+            try:
+                details = inspect_media(path)
+                stat_result = path.stat()
+                record_scan(media_relative_path, stat_result.st_size, stat_result.st_mtime, details)
+                summary = {"status":"not_configured","found":0,"staged":0,"candidates":[]}
+                phase = "inspected"
+                if details["has_verified_english_subtitle"]:
+                    summary["status"] = "verified_english_present"
+                elif client is not None:
+                    phase = "discovery"
+                    update_job_progress(job_id, phase=phase, current_file=media_relative_path)
+                    try:
+                        summary = stage_candidates(client, path, Path(settings.media_root).resolve(),
+                                                   stat_result, details.get("metadata") or {})
+                    except OpenSubtitlesError as exc:
+                        logger.warning("opensubtitles_search_failed", extra={"event":"opensubtitles_search_failed","job_id":job_id,"media_path":media_relative_path,"phase":"discovery","error_type":type(exc).__name__})
+                        summary = {"status":"provider_error","found":0,"staged":0,
+                                   "candidates":[],"error":str(exc)}
+                record_job_item(job_id, media_path=media_relative_path, status="completed",
+                                phase=phase, details={"candidate_status":summary["status"],
+                                "candidates_found":summary["found"],"candidates_staged":summary["staged"]})
+                succeeded += 1
+                logger.info("media_scan_completed", extra={"event":"media_scan_completed",
+                            "job_id":job_id,"media_path":media_relative_path,"phase":phase,"status":"completed"})
+            except (OSError, subprocess.SubprocessError, ValueError, OpenSubtitlesError) as exc:
+                record_job_item(job_id, media_path=media_relative_path, status="failed",
+                                phase="scan", error=f"{type(exc).__name__}: {str(exc)[:400]}")
+                failed += 1
+                logger.exception("media_scan_failed", extra={"event":"media_scan_failed",
+                                 "job_id":job_id,"media_path":media_relative_path,
+                                 "phase":"scan","error_type":type(exc).__name__})
+            completed += 1
+            update_job_progress(job_id, completed=completed, succeeded=succeeded, failed=failed)
+        finish_job(job_id, "completed", f"{failed} file(s) failed." if failed else None)
+        logger.info("scan_job_completed", extra={"event":"scan_job_completed",
+                    "job_id":job_id,"phase":"completed","status":"completed"})
+    except Exception as exc:
+        finish_job(job_id, "failed", f"{type(exc).__name__}: {str(exc)[:400]}")
+        logger.exception("scan_job_failed", extra={"event":"scan_job_failed","job_id":job_id,
+                         "phase":"scan","error_type":type(exc).__name__})
 
 
 @app.post("/api/scan")
-def scan(request: ScanRequest):
+def scan(request: ScanRequest, background_tasks: BackgroundTasks):
     media_root = Path(settings.media_root).resolve()
     requested = Path(request.path.strip() or "/media")
     if requested.is_absolute() and str(requested).startswith("/media/"):
@@ -376,56 +493,21 @@ def scan(request: ScanRequest):
         paths = list(scan_media(root))
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job = create_job("scan", total=len(paths), metadata={"scan_root":str(root)})
+    background_tasks.add_task(_scan_worker, job["id"], root, paths)
+    logger.info("scan_job_queued", extra={"event":"scan_job_queued","job_id":job["id"],
+                "phase":"queued","status":"queued"})
+    return {"job_id":job["id"],"status":"queued","total":len(paths)}
 
-    client = None
-    if settings.open_subtitles_api_key.strip():
-        client = OpenSubtitlesClient(
-            settings.open_subtitles_api_key,
-            settings.open_subtitles_username,
-            settings.open_subtitles_password,
-        )
 
-    inspected = []
-    for path in paths:
-        if not media_path_is_safe(path, root):
-            continue
-        try:
-            details = inspect_media(path)
-            stat_result = path.stat()
-            relative_path = str(path.relative_to(root))
-            media_relative_path = str(path.relative_to(media_root))
-            record_scan(media_relative_path, stat_result.st_size, stat_result.st_mtime, details)
-            candidate_summary = {"status": "not_configured", "found": 0, "staged": 0, "candidates": []}
-            if details["has_verified_english_subtitle"]:
-                candidate_summary["status"] = "verified_english_present"
-            elif client is not None:
-                try:
-                    candidate_summary = stage_candidates(
-                        client, path, media_root, stat_result, details.get("metadata") or {}
-                    )
-                except OpenSubtitlesError as exc:
-                    candidate_summary = {
-                        "status": "provider_error", "found": 0, "staged": 0,
-                        "candidates": [], "error": str(exc)
-                    }
-            inspected.append({
-                "path": relative_path,
-                "size": details["size"],
-                "duration": details["duration"],
-                "video_streams": details["video_streams"],
-                "audio_streams": details["audio_streams"],
-                "subtitle_streams": details["subtitle_streams"],
-                "metadata": details.get("metadata", {}),
-                "has_verified_english_subtitle": details["has_verified_english_subtitle"],
-                "subtitle_content_assessment": details["subtitle_content_assessment"],
-                "needs_review": not details["has_verified_english_subtitle"],
-                "subtitle_candidates": candidate_summary,
-            })
-        except (OSError, subprocess.SubprocessError, ValueError) as exc:
-            inspected.append({"path": str(path.relative_to(root)), "error": str(exc)})
-    return {
-        "files": inspected,
-        "count": len(inspected),
-        "test_mode": settings.test_mode,
-        "opensubtitles_configured": client is not None,
-    }
+@app.get("/api/jobs")
+def jobs(limit: int = 25):
+    return {"jobs":list_jobs(limit)}
+
+
+@app.get("/api/jobs/{job_id}")
+def job_detail(job_id: int):
+    result = get_job(job_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return result
