@@ -155,6 +155,21 @@ def save_candidate(media_relative_path: str, media_size: int, media_modified_at:
                     WHEN subtitle_candidates.media_size != excluded.media_size
                       OR subtitle_candidates.media_modified_at != excluded.media_modified_at
                     THEN NULL ELSE subtitle_candidates.review_updated_at END,
+                patch_status=CASE
+                    WHEN (subtitle_candidates.media_size != excluded.media_size
+                      OR subtitle_candidates.media_modified_at != excluded.media_modified_at)
+                      AND subtitle_candidates.patch_status='patched'
+                    THEN 'not_started' ELSE subtitle_candidates.patch_status END,
+                patch_started_at=CASE
+                    WHEN (subtitle_candidates.media_size != excluded.media_size
+                      OR subtitle_candidates.media_modified_at != excluded.media_modified_at)
+                      AND subtitle_candidates.patch_status='patched'
+                    THEN NULL ELSE subtitle_candidates.patch_started_at END,
+                patch_completed_at=CASE
+                    WHEN (subtitle_candidates.media_size != excluded.media_size
+                      OR subtitle_candidates.media_modified_at != excluded.media_modified_at)
+                      AND subtitle_candidates.patch_status='patched'
+                    THEN NULL ELSE subtitle_candidates.patch_completed_at END,
                 updated_at=CURRENT_TIMESTAMP
         """, (
             media_relative_path, media_size, media_modified_at,
