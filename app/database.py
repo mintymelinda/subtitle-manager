@@ -313,6 +313,11 @@ def clear_saved_data() -> list[str]:
         ).fetchone()
         if active:
             raise ValueError("Wait for active jobs to finish before clearing saved data.")
+        injecting = db.execute(
+            "SELECT id FROM subtitle_candidates WHERE patch_status='running' LIMIT 1"
+        ).fetchone()
+        if injecting:
+            raise ValueError("Wait for active injections to finish before clearing saved data.")
         staged = db.execute(
             "SELECT staged_path FROM subtitle_candidates WHERE staged_path IS NOT NULL"
         ).fetchall()
