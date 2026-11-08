@@ -1,9 +1,10 @@
 from pathlib import Path
 from typing import Iterable
 
-VIDEO_EXTENSIONS = {
-    ".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".ts", ".m2ts", ".webm"
-}
+VIDEO_EXTENSIONS = {".mkv"}
+
+# The transactional patcher currently writes Matroska containers only. Other
+# video formats must not enter candidate discovery until a safe patcher exists.
 
 
 def scan_media(root: Path) -> Iterable[Path]:

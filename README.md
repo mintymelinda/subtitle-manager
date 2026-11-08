@@ -15,7 +15,7 @@ A self-hosted web application for finding missing English subtitles and adding a
 ## Current implementation
 
 - Docker Compose and FastAPI service foundation.
-- Recursive scanner for common video formats.
+- Recursive scanner limited to MKV files, the only container currently supported by the transactional patcher; AVI, MP4, MOV, and other unsupported containers are excluded before subtitle discovery.
 - FFprobe inspection of container streams and available title/year/IMDb metadata.
 - Text subtitle content language detection for supported subtitle codecs; bitmap or too-short tracks are marked unknown rather than assumed English based on metadata.
 - SQLite scan, candidate, and patch-history schema.
@@ -33,7 +33,7 @@ A self-hosted web application for finding missing English subtitles and adding a
 - Responsive web dashboard to start scans, review persisted media inspection and track summaries, preview or download staged candidates, and record explicit per-file candidate approval or rejection.
 - In-dashboard mounted-media folder browser with nested navigation and multi-folder selection; directory listing and scan requests are confined to `/media` and reject symlink traversal.
 - Persistent scan, review, and injection jobs with queued/running/completed/failed/interrupted states, phase/current-file reporting, progress counters, and per-file outcomes in SQLite.
-- Live dashboard polling for active job progress and a recent activity/history view that survives application restarts.
+- Live dashboard polling for active job progress and a recent activity/history view that survives application restarts. Active scans can be cancelled from the dashboard; cancellation is cooperative and stops before the next file, allowing any in-progress file inspection or provider request to finish safely.
 - Structured JSON application logs with UTC timestamps, event/job/candidate context, exception details, and recursive redaction of API keys, passwords, tokens, authorization headers, and cookies.
 - Candidate review decisions are stored in SQLite, tied to the exact media path and scanned file size/mtime. Only one candidate can be approved for a media file at a time; changed media invalidates the previous decision.
 - GitHub Actions checks for Python compilation, unit tests, real FFmpeg/MKVToolNix integration tests, and Docker image build.
@@ -77,7 +77,7 @@ Existing installations that still have OpenSubtitles values in `.env` are suppor
 
 4. Open http://localhost:8080, choose **Browse folders**, navigate the mounted directory, and select one or more folders to scan. If none are selected, the scan defaults to `/media`. The browser is restricted to the mounted media volume and does not follow symbolic links.
 
-Test mode is enabled by default. After reviewing and approving a candidate, use **Inject approved subtitle** to patch that one MKV. Test mode performs the actual replacement and retains the original recovery copy beside the media file. Set `TEST_MODE=false` only when ready for normal operation; in normal mode the recovery copy is deleted only after successful post-replacement verification. The current patcher supports MKV containers only.
+Test mode is enabled by default. After reviewing and approving a candidate, use **Inject approved subtitle** to patch that one MKV. Test mode performs the actual replacement and retains the original recovery copy beside the media file. Set `TEST_MODE=false` only when ready for normal operation; in normal mode the recovery copy is deleted only after successful post-replacement verification. The scanner deliberately discovers only MKV containers because the current transactional patcher supports MKV only. Other video files are skipped entirely and will not receive subtitle candidates.
 
 ## Development
 
