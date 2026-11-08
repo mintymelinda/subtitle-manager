@@ -31,6 +31,7 @@ app = FastAPI(title=settings.app_name)
 
 class ScanRequest(BaseModel):
     path: str = "/media"
+    paths: list[str] = []
 
 
 class CandidateDecisionRequest(BaseModel):
@@ -162,6 +163,7 @@ button:disabled{opacity:.5;cursor:not-allowed}.notice{border-left:4px solid #eab
 .candidate h3,.candidate p{overflow-wrap:anywhere}.actions{display:flex;flex-wrap:wrap;gap:.8rem;margin-top:1rem}
 .actions a{color:#93c5fd;padding:.5rem 0}.secondary{background:#4b5563}.warning{color:#fbbf24}
 input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-radius:8px;border:1px solid #64748b;background:#111827;color:#e5e7eb}
+.folder-browser{border:1px solid #475569;border-radius:10px;padding:1rem;margin:.75rem 0;background:#111827}.folder-list{list-style:none;padding:0;margin:.5rem 0}.folder-list li{padding:.45rem 0;border-bottom:1px solid #374151}.folder-entry{display:flex;align-items:center;gap:.7rem}.folder-entry input{width:auto;margin:0}.folder-path{font-family:ui-monospace,monospace;overflow-wrap:anywhere}.selected-folders{display:flex;flex-wrap:wrap;gap:.5rem}.folder-chip{background:#374151;border-radius:8px;padding:.35rem .6rem}
 </style></head><body><h1>Subtitle Manager</h1>
 <p>Find missing English subtitles and review candidates before changing media.</p>
 <div class="notice"><strong>Safety:</strong> scanning and downloads never change media. Injection requires a separately approved candidate and a second confirmation. Current mode: <strong id="mode">loading…</strong>.</div>
@@ -176,8 +178,7 @@ input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-
 <div class="actions"><button id="provider-save">Save settings</button><button id="provider-test" class="secondary">Test connection</button></div>
 <p id="provider-message" aria-live="polite"></p>
 </section>
-<section class="panel"><h2>Media scan</h2><label for="scan-path">Folder to scan</label><input id="scan-path" type="text" value="/media"><p>Enter a folder within the mounted /media directory.</p>
-<button id="scan">Start scan</button><p id="status">Ready.</p><div id="scan-results"></div><div id="job-progress" class="candidate" aria-live="polite">No active job.</div></section>
+<section class="panel"><h2>Media scan</h2><p>Browse the mounted media directory and select one or more folders to scan.</p><button id="browse-folders" class="secondary">Browse folders</button><div id="selected-folders" class="selected-folders"><span class="folder-chip">/media (default)</span></div><div id="folder-browser" class="folder-browser" hidden><div class="actions"><button id="folder-up" class="secondary" type="button">Up one level</button><button id="folder-select-current" class="secondary" type="button">Select this folder</button><button id="folder-close" class="secondary" type="button">Close</button></div><p id="folder-current" class="folder-path">/media</p><ul id="folder-list" class="folder-list"></ul><p id="folder-error" class="warning" aria-live="polite"></p></div><button id="scan">Start scan</button><p id="status">Ready.</p><div id="scan-results"></div><div id="job-progress" class="candidate" aria-live="polite">No active job.</div></section>
 <section class="panel"><h2>Recent activity and processing history</h2><div id="job-history">Loading job history…</div></section>
 <section class="panel"><h2>Subtitle candidate review</h2><p>Every candidate is shown under its exact media file. Inspect the release, match rationale, and subtitle content before deciding.</p><div id="candidate-list">Loading saved candidates…</div></section>
 <script>
@@ -204,7 +205,14 @@ document.querySelector("#provider-save").addEventListener("click",async()=>{cons
 document.querySelector("#provider-test").addEventListener("click",async()=>{const button=document.querySelector("#provider-test"),message=document.querySelector("#provider-message");button.disabled=true;message.textContent="Testing OpenSubtitles…";try{const r=await fetch("/api/settings/opensubtitles/test",{method:"POST"}),d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);message.textContent=d.message;}catch(e){message.textContent="Connection test failed: "+e.message;}finally{button.disabled=false;}});
 loadProviderSettings();
 fetch("/api/config").then(r=>r.json()).then(c=>{document.querySelector("#mode").textContent=c.test_mode?"TEST MODE":"LIVE MODE";}).catch(()=>{document.querySelector("#mode").textContent="unknown";});
-scanButton.addEventListener("click",async()=>{scanButton.disabled=true;status.textContent="Starting scan…";scanResults.replaceChildren();try{const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:document.querySelector("#scan-path").value})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);status.textContent="Scan queued: "+d.total+" media files.";trackJob(d.job_id);}catch(e){status.textContent="Could not start scan: "+e.message;scanButton.disabled=false;}});
+let browserPath="";let selectedFolders=new Set();
+function renderSelectedFolders(){const host=document.querySelector("#selected-folders");host.replaceChildren();for(const path of selectedFolders){const chip=el("span",path?"/media/"+path:"/media","folder-chip");host.append(chip);}if(!selectedFolders.size)host.append(el("span","No folders selected","warning"));}
+async function loadFolderBrowser(path){const list=document.querySelector("#folder-list"),error=document.querySelector("#folder-error");list.replaceChildren();error.textContent="";try{const r=await fetch("/api/media/directories?path="+encodeURIComponent(path));const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);browserPath=d.path;document.querySelector("#folder-current").textContent=d.display_path;document.querySelector("#folder-up").disabled=!d.parent_path;for(const folder of d.directories){const li=el("li"),row=el("div",undefined,"folder-entry"),check=el("input"),open=el("button",folder.name);check.type="checkbox";check.checked=selectedFolders.has(folder.path);check.setAttribute("aria-label","Select "+folder.name);check.addEventListener("change",()=>{if(check.checked)selectedFolders.add(folder.path);else selectedFolders.delete(folder.path);renderSelectedFolders();});open.type="button";open.className="secondary";open.addEventListener("click",()=>loadFolderBrowser(folder.path));row.append(check,open);li.append(row);list.append(li);}if(!d.directories.length)list.append(el("li","No subfolders in this folder."));}catch(e){error.textContent="Could not list folders: "+e.message;}}
+document.querySelector("#browse-folders").addEventListener("click",()=>{document.querySelector("#folder-browser").hidden=false;loadFolderBrowser(browserPath);});
+document.querySelector("#folder-up").addEventListener("click",()=>{const parent=browserPath.split("/").slice(0,-1).join("/");loadFolderBrowser(parent);});
+document.querySelector("#folder-select-current").addEventListener("click",()=>{selectedFolders.add(browserPath);renderSelectedFolders();});
+document.querySelector("#folder-close").addEventListener("click",()=>{document.querySelector("#folder-browser").hidden=true;});
+scanButton.addEventListener("click",async()=>{scanButton.disabled=true;status.textContent="Starting scan…";scanResults.replaceChildren();try{const paths=selectedFolders.size?[...selectedFolders]:[""];const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paths})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);status.textContent="Scan queued: "+d.total+" media files across "+paths.length+" folder(s).";trackJob(d.job_id);}catch(e){status.textContent="Could not start scan: "+e.message;scanButton.disabled=false;}});
 async function refreshJobHistory(){try{const r=await fetch("/api/jobs?limit=20");const d=await r.json();const host=document.querySelector("#job-history");host.replaceChildren();if(!d.jobs.length){host.append(el("p","No processing history yet."));return;}for(const j of d.jobs){const card=el("article",undefined,"candidate");card.append(el("strong","Job #"+j.id+" · "+j.kind+" · "+j.status));line(card,"Progress",j.completed+"/"+j.total+" · "+j.succeeded+" succeeded · "+j.failed+" failed");line(card,"Phase",j.phase||"—");line(card,"Current file",j.current_file||"—");if(j.error)card.append(el("p",j.error,"warning"));const detailResponse=await fetch("/api/jobs/"+j.id);if(detailResponse.ok){const detail=await detailResponse.json();for(const item of detail.items||[]){const outcome=el("p",item.status+" · "+item.media_path+" · "+item.phase);if(item.review_decision)outcome.append(document.createTextNode(" · review: "+item.review_decision));if(item.patch_status)outcome.append(document.createTextNode(" · patch: "+item.patch_status));if(item.error)outcome.append(document.createTextNode(" · "+item.error));card.append(outcome);}}host.append(card);}}catch(e){document.querySelector("#job-history").textContent="Could not load history: "+e.message;}}
 async function trackJob(id){const panel=document.querySelector("#job-progress");async function poll(){try{const r=await fetch("/api/jobs/"+id);const j=await r.json();if(!r.ok)throw Error(j.detail||r.statusText);panel.replaceChildren();panel.append(el("strong","Job #"+j.id+" · "+j.kind+" · "+j.status));line(panel,"Progress",j.completed+"/"+j.total+" · "+j.succeeded+" succeeded · "+j.failed+" failed");line(panel,"Phase",j.phase||"queued");line(panel,"Current file",j.current_file||"—");if(j.error)panel.append(el("p",j.error,"warning"));await refreshJobHistory();if(["completed","failed","cancelled","interrupted"].includes(j.status)){scanButton.disabled=false;status.textContent=j.kind==="scan"?"Scan "+j.status+".":"Injection "+j.status+".";await loadCandidates();return;}setTimeout(poll,1000);}catch(e){panel.textContent="Could not read job status: "+e.message;scanButton.disabled=false;}}poll();}
 loadCandidates().catch(e=>candidateList.textContent="Could not load candidates: "+e.message);
@@ -257,6 +265,42 @@ def test_opensubtitles_settings():
         return {"ok": True, "message": "OpenSubtitles connection verified."}
     except (ValueError, OpenSubtitlesError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/media/directories")
+def media_directories(path: str = ""):
+    media_root = Path(settings.media_root).resolve(strict=True)
+    relative = Path(path or ".")
+    if relative.is_absolute() or ".." in relative.parts:
+        raise HTTPException(status_code=400, detail="Choose a folder inside the mounted media directory.")
+    current = media_root
+    for component in relative.parts:
+        if component in {"", "."}:
+            continue
+        current = current / component
+        if current.is_symlink():
+            raise HTTPException(status_code=400, detail="Symbolic-link folders cannot be browsed.")
+    try:
+        current = current.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=404, detail="The selected folder does not exist.")
+    if not current.is_relative_to(media_root) or not current.is_dir():
+        raise HTTPException(status_code=400, detail="Choose a directory inside the mounted media directory.")
+    directories = []
+    try:
+        for child in current.iterdir():
+            if child.is_symlink() or not child.is_dir():
+                continue
+            child_relative = child.relative_to(media_root).as_posix()
+            directories.append({"name": child.name, "path": child_relative})
+    except OSError as exc:
+        raise HTTPException(status_code=403, detail="Could not read this folder.") from exc
+    directories.sort(key=lambda item: item["name"].casefold())
+    current_relative = current.relative_to(media_root).as_posix()
+    parent_relative = None if current == media_root else current.parent.relative_to(media_root).as_posix()
+    return {"path": "" if current_relative == "." else current_relative,
+            "display_path": "/media" if current_relative == "." else "/media/" + current_relative,
+            "parent_path": parent_relative, "directories": directories}
 
 
 @app.get("/api/media")
@@ -531,30 +575,54 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path]):
 
 @app.post("/api/scan")
 def scan(request: ScanRequest, background_tasks: BackgroundTasks):
-    media_root = Path(settings.media_root).resolve()
-    requested = Path(request.path.strip() or "/media")
-    if requested.is_absolute() and str(requested).startswith("/media/"):
-        requested = Path(str(requested)[len("/media/"):])
-    elif requested.is_absolute() and str(requested) == "/media":
-        requested = Path(".")
-    elif requested.is_absolute():
-        raise HTTPException(status_code=400, detail="Choose a folder inside the mounted /media directory.")
-    if ".." in requested.parts:
-        raise HTTPException(status_code=400, detail="Parent-directory paths are not allowed.")
-    root = (media_root / requested).resolve()
-    if not root.is_relative_to(media_root):
-        raise HTTPException(status_code=400, detail="The selected folder must be inside /media.")
-    if not root.is_dir():
-        raise HTTPException(status_code=400, detail="The selected folder does not exist or is not a directory.")
+    media_root = Path(settings.media_root).resolve(strict=True)
+    requested_paths = request.paths or [request.path]
+    roots = []
+    for value in requested_paths:
+        requested = Path((value or "").strip() or ".")
+        if requested.is_absolute():
+            raw = str(requested)
+            if raw == "/media":
+                requested = Path(".")
+            elif raw.startswith("/media/"):
+                requested = Path(raw[len("/media/"):])
+            else:
+                raise HTTPException(status_code=400, detail="Choose folders inside the mounted /media directory.")
+        if ".." in requested.parts:
+            raise HTTPException(status_code=400, detail="Parent-directory paths are not allowed.")
+        candidate = media_root
+        for component in requested.parts:
+            if component in {"", "."}:
+                continue
+            candidate = candidate / component
+            if candidate.is_symlink():
+                raise HTTPException(status_code=400, detail="Symbolic-link folders cannot be scanned.")
+        try:
+            candidate = candidate.resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise HTTPException(status_code=400, detail="A selected folder does not exist.")
+        if not candidate.is_relative_to(media_root) or not candidate.is_dir():
+            raise HTTPException(status_code=400, detail="Every selected folder must be inside /media.")
+        if candidate not in roots:
+            roots.append(candidate)
+    if not roots:
+        raise HTTPException(status_code=400, detail="Select at least one folder to scan.")
     try:
-        paths = list(scan_media(root))
+        paths = []
+        seen = set()
+        for selected_root in roots:
+            for media_file in scan_media(selected_root):
+                canonical = media_file.resolve(strict=True)
+                if canonical not in seen:
+                    seen.add(canonical)
+                    paths.append(canonical)
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    job = create_job("scan", total=len(paths), metadata={"scan_root":str(root)})
-    background_tasks.add_task(_scan_worker, job["id"], root, paths)
+    job = create_job("scan", total=len(paths), metadata={"scan_roots":[str(root.relative_to(media_root)) for root in roots]})
+    background_tasks.add_task(_scan_worker, job["id"], media_root, paths)
     logger.info("scan_job_queued", extra={"event":"scan_job_queued","job_id":job["id"],
                 "phase":"queued","status":"queued"})
-    return {"job_id":job["id"],"status":"queued","total":len(paths)}
+    return {"job_id":job["id"],"status":"queued","total":len(paths),"folders":len(roots)}
 
 
 @app.get("/api/jobs")
