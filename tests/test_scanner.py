@@ -20,6 +20,15 @@ class ScannerTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 list(scan_media(Path(directory) / "missing"))
 
+    def test_excludes_video_formats_that_cannot_be_patched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("movie.mkv", "movie.MKV", "movie.mp4", "movie.avi",
+                         "movie.mov", "movie.m4v", "movie.webm"):
+                (root / name).write_bytes(b"x")
+            found = {path.name for path in scan_media(root)}
+            self.assertEqual(found, {"movie.mkv", "movie.MKV"})
+
 
 if __name__ == "__main__":
     unittest.main()
