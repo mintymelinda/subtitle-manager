@@ -356,8 +356,8 @@ def list_candidates(media_relative_path: str | None = None) -> list[dict]:
 
 
 def set_candidate_decision(candidate_id: int, decision: str) -> dict | None:
-    if decision not in {"approved", "rejected"}:
-        raise ValueError("Decision must be approved or rejected.")
+    if decision not in {"pending", "approved", "rejected"}:
+        raise ValueError("Decision must be pending, approved, or rejected.")
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
         candidate = db.execute(
