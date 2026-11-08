@@ -15,7 +15,7 @@ from app.database import (
     mark_candidate_error, list_candidates, list_media_files, set_candidate_decision,
     get_candidate, claim_candidate_patch, finish_candidate_patch, recover_interrupted_patches,
     create_job, start_job, update_job_progress, record_job_item, finish_job,
-    get_job, list_jobs, recover_interrupted_jobs,
+    get_job, list_jobs, recover_interrupted_jobs, clear_pending_review_queue,
 )
 from app.media import inspect_media
 from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError, assess_subtitle_payload
@@ -183,7 +183,7 @@ input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-
 <section class="panel"><h2>Subtitle candidate review</h2><p>Every candidate is shown under its exact media file. Inspect the release, match rationale, and subtitle content before deciding.</p><div id="candidate-list">Loading saved candidates…</div></section>
 <script>
 const scanButton=document.querySelector("#scan"),cancelScanButton=document.querySelector("#cancel-scan"),status=document.querySelector("#status"),scanResults=document.querySelector("#scan-results"),candidateList=document.querySelector("#candidate-list");
-let activeScanJobId=null;
+let activeScanJobId=null;let activeTrackedJobId=null;
 function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
 function line(parent,label,value){const p=el("p");p.append(el("strong",label+": "),document.createTextNode(value===null||value===undefined?"Unknown":String(value)));parent.append(p);}
 function streams(value){if(!Array.isArray(value)||!value.length)return "None reported";return value.map(s=>[s.codec,s.language,s.title].filter(Boolean).join(" · ")||JSON.stringify(s)).join("; ");}
@@ -217,9 +217,26 @@ document.querySelector("#clear-folder-selection").addEventListener("click",()=>{
 scanButton.addEventListener("click",async()=>{scanButton.disabled=true;cancelScanButton.hidden=true;status.textContent="Starting scan…";scanResults.replaceChildren();try{const paths=selectedFolders.size?[...selectedFolders]:[""];const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paths})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);status.textContent="Scan queued: "+d.total+" media files across "+paths.length+" folder(s).";trackJob(d.job_id);}catch(e){status.textContent="Could not start scan: "+e.message;scanButton.disabled=false;}});
 async function refreshJobHistory(){try{const r=await fetch("/api/jobs?limit=20",{headers:{"Accept":"application/json"}});const d=await readJsonResponse(r,"Job history request");const host=document.querySelector("#job-history");host.replaceChildren();if(!d.jobs.length){host.append(el("p","No processing history yet."));return;}for(const j of d.jobs){const card=el("article",undefined,"candidate");card.append(el("strong","Job #"+j.id+" · "+j.kind+" · "+j.status));line(card,"Progress",j.completed+"/"+j.total+" · "+j.succeeded+" succeeded · "+j.failed+" failed");line(card,"Phase",j.phase||"—");line(card,"Current file",j.current_file||"—");if(j.error)card.append(el("p",j.error,"warning"));const detailResponse=await fetch("/api/jobs/"+j.id);if(detailResponse.ok){const detail=await readJsonResponse(detailResponse,"Job detail request");for(const item of detail.items||[]){const outcome=el("p",item.status+" · "+item.media_path+" · "+item.phase);if(item.review_decision)outcome.append(document.createTextNode(" · review: "+item.review_decision));if(item.patch_status)outcome.append(document.createTextNode(" · patch: "+item.patch_status));if(item.error)outcome.append(document.createTextNode(" · "+item.error));card.append(outcome);}}host.append(card);}}catch(e){document.querySelector("#job-history").textContent="Could not load history: "+e.message;}}
 async function readJsonResponse(response,context){const body=await response.text();let data;try{data=body?JSON.parse(body):null;}catch{const preview=body.trim().slice(0,180);throw Error(context+" returned non-JSON (HTTP "+response.status+"). "+(preview||"The response body was empty."));}if(!response.ok)throw Error(data?.detail||context+" failed (HTTP "+response.status+").");if(!data||typeof data!=="object")throw Error(context+" returned an empty or invalid response.");return data;}
-async function trackJob(id){const panel=document.querySelector("#job-progress");let failures=0;let stopped=false;activeScanJobId=null;async function poll(){if(stopped)return;try{const r=await fetch("/api/jobs/"+id,{headers:{"Accept":"application/json"}});const j=await readJsonResponse(r,"Job status request");if(j.kind==="scan"&&["queued","running"].includes(j.status)){activeScanJobId=id;cancelScanButton.hidden=false;cancelScanButton.disabled=false;}else if(j.kind==="scan"){activeScanJobId=null;cancelScanButton.hidden=true;}if(typeof j.id!=="number"||typeof j.status!=="string")throw Error("Job status response is missing its job identity or status.");failures=0;panel.replaceChildren();panel.append(el("strong","Job #"+j.id+" · "+j.kind+" · "+j.status));line(panel,"Progress",j.completed+"/"+j.total+" · "+j.succeeded+" succeeded · "+j.failed+" failed");line(panel,"Phase",j.phase||"queued");line(panel,"Current file",j.current_file||"—");if(j.error)panel.append(el("p",j.error,"warning"));await refreshJobHistory();if(["completed","failed","cancelled","interrupted"].includes(j.status)){stopped=true;scanButton.disabled=false;cancelScanButton.hidden=true;activeScanJobId=null;status.textContent=j.kind==="scan"?"Scan "+j.status+".":"Injection "+j.status+".";await loadCandidates();return;}setTimeout(poll,1000);}catch(e){failures++;panel.replaceChildren();panel.append(el("p","Job #"+id+" is still being tracked, but its status could not be read: "+e.message,"warning"));if(failures<5){panel.append(el("p","Retrying status check ("+failures+"/5)…"));setTimeout(poll,Math.min(1000*Math.pow(2,failures-1),8000));return;}stopped=true;scanButton.disabled=false;cancelScanButton.hidden=true;activeScanJobId=null;status.textContent="Job #"+id+" may still be running; status tracking paused after repeated request failures.";const retry=el("button","Retry status check");retry.addEventListener("click",()=>{stopped=false;failures=0;retry.remove();poll();});panel.append(retry);}}poll();}
+async function trackJob(id){if(activeTrackedJobId===id)return;activeTrackedJobId=id;const panel=document.querySelector("#job-progress");let failures=0;let stopped=false;activeScanJobId=null;async function poll(){if(stopped)return;try{const r=await fetch("/api/jobs/"+id,{headers:{"Accept":"application/json"}});const j=await readJsonResponse(r,"Job status request");if(j.kind==="scan"&&["queued","running"].includes(j.status)){activeScanJobId=id;cancelScanButton.hidden=false;cancelScanButton.disabled=false;}else if(j.kind==="scan"){activeScanJobId=null;cancelScanButton.hidden=true;}if(typeof j.id!=="number"||typeof j.status!=="string")throw Error("Job status response is missing its job identity or status.");failures=0;panel.replaceChildren();panel.append(el("strong","Job #"+j.id+" · "+j.kind+" · "+j.status));line(panel,"Progress",j.completed+"/"+j.total+" · "+j.succeeded+" succeeded · "+j.failed+" failed");line(panel,"Phase",j.phase||"queued");line(panel,"Current file",j.current_file||"—");if(j.error)panel.append(el("p",j.error,"warning"));await refreshJobHistory();if(["completed","failed","cancelled","interrupted"].includes(j.status)){stopped=true;activeTrackedJobId=null;scanButton.disabled=false;cancelScanButton.hidden=true;activeScanJobId=null;status.textContent=j.kind==="scan"?"Scan "+j.status+".":"Injection "+j.status+".";await loadCandidates();return;}setTimeout(poll,1000);}catch(e){failures++;panel.replaceChildren();panel.append(el("p","Job #"+id+" is still being tracked, but its status could not be read: "+e.message,"warning"));if(failures<5){panel.append(el("p","Retrying status check ("+failures+"/5)…"));setTimeout(poll,Math.min(1000*Math.pow(2,failures-1),8000));return;}stopped=true;activeTrackedJobId=null;scanButton.disabled=false;cancelScanButton.hidden=true;activeScanJobId=null;status.textContent="Job #"+id+" may still be running; status tracking paused after repeated request failures.";const retry=el("button","Retry status check");retry.addEventListener("click",()=>{stopped=false;failures=0;retry.remove();poll();});panel.append(retry);}}poll();}
 cancelScanButton.addEventListener("click",async()=>{if(activeScanJobId===null)return;cancelScanButton.disabled=true;status.textContent="Requesting scan cancellation…";try{const r=await fetch("/api/jobs/"+activeScanJobId+"/cancel",{method:"POST",headers:{"Accept":"application/json"}});const d=await readJsonResponse(r,"Cancel scan request");status.textContent=d.status==="cancelled"?"Scan cancelled. The current file, if any, was allowed to finish.":"Scan is no longer active ("+d.status+").";cancelScanButton.hidden=true;activeScanJobId=null;}catch(e){status.textContent="Could not cancel scan: "+e.message;cancelScanButton.disabled=false;}});\nloadCandidates().catch(e=>candidateList.textContent="Could not load candidates: "+e.message);
 refreshJobHistory();
+async function resumeLatestJob(){
+ try{
+  const r=await fetch("/api/jobs?limit=20",{headers:{"Accept":"application/json"}});
+  const d=await readJsonResponse(r,"Restore job progress");
+  const latest=d.jobs?.find(j=>["queued","running"].includes(j.status))||d.jobs?.[0];if(!latest)return;
+  if(["queued","running"].includes(latest.status)){
+   if(latest.kind==="scan")scanButton.disabled=true;status.textContent="Restoring "+latest.kind+" job #"+latest.id+"…";trackJob(latest.id);return;
+  }
+  const panel=document.querySelector("#job-progress");panel.replaceChildren();
+  panel.append(el("strong","Job #"+latest.id+" · "+latest.kind+" · "+latest.status));
+  line(panel,"Progress",latest.completed+"/"+latest.total+" · "+latest.succeeded+" succeeded · "+latest.failed+" failed");
+  line(panel,"Phase",latest.phase||"—");line(panel,"Current file",latest.current_file||"—");
+  if(latest.error)panel.append(el("p",latest.error,"warning"));
+  status.textContent=(latest.kind==="scan"?"Scan ":"Job ")+latest.status+" (restored from saved history).";
+ }catch(e){status.textContent="Could not restore previous progress: "+e.message;}
+}
+resumeLatestJob();
 fetch("/api/media").then(r=>r.json()).then(d=>renderScan(d.media.map(m=>({path:m.relative_path,...m.inspection,has_verified_english_subtitle:m.has_verified_english_subtitle})))).catch(()=>{});
 </script></body></html>""")
 
@@ -628,6 +645,14 @@ def scan(request: ScanRequest, background_tasks: BackgroundTasks):
                     paths.append(canonical)
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    for staged_path in clear_pending_review_queue():
+        try:
+            staging_root = Path(settings.subtitle_staging_path).resolve()
+            candidate_path = Path(staged_path).resolve()
+            if candidate_path.is_relative_to(staging_root) and candidate_path.is_file():
+                candidate_path.unlink()
+        except (OSError, RuntimeError, ValueError):
+            logger.warning("stale_candidate_cleanup_failed", extra={"event":"stale_candidate_cleanup_failed","phase":"scan_reset"})
     job = create_job("scan", total=len(paths), metadata={"scan_roots":[str(root.relative_to(media_root)) for root in roots]})
     background_tasks.add_task(_scan_worker, job["id"], media_root, paths)
     logger.info("scan_job_queued", extra={"event":"scan_job_queued","job_id":job["id"],

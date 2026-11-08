@@ -280,6 +280,25 @@ def mark_candidate_error(candidate_id: int, error: str, status: str = 'download_
 
 
 
+def clear_pending_review_queue() -> list[str]:
+    """Remove only unreviewed, unpatched candidates when a new scan starts.
+
+    Approved/rejected decisions and any candidate with patch activity are retained.
+    Return staged paths so callers can safely clean up orphaned review downloads.
+    """
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        rows = db.execute(
+            """SELECT staged_path FROM subtitle_candidates
+               WHERE review_decision='pending' AND patch_status='not_started'"""
+        ).fetchall()
+        db.execute(
+            """DELETE FROM subtitle_candidates
+               WHERE review_decision='pending' AND patch_status='not_started'"""
+        )
+        return [row["staged_path"] for row in rows if row["staged_path"]]
+
+
 def list_candidates(media_relative_path: str | None = None) -> list[dict]:
     query = """
         SELECT c.*, m.size AS current_media_size, m.modified_at AS current_media_modified_at,
