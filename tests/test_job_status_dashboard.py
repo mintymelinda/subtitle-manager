@@ -10,6 +10,8 @@ class JobStatusDashboardTests(unittest.TestCase):
         self.assertIn("JSON.parse(body)", source)
         self.assertIn("returned non-JSON (HTTP ", source)
         self.assertIn('headers:{"Accept":"application/json"}', source)
+        self.assertIn('readJsonResponse(r,"Job history request")', source)
+        self.assertIn('readJsonResponse(detailResponse,"Job detail request")', source)
 
     def test_job_polling_retries_and_exposes_manual_retry(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
