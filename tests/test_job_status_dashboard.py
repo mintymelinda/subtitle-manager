@@ -13,7 +13,9 @@ class JobStatusDashboardTests(unittest.TestCase):
         self.assertIn("returned non-JSON (HTTP ", source)
         self.assertIn('headers:{"Accept":"application/json"}', source)
         self.assertNotIn('readJsonResponse(r,"Job history request")', source)
-        self.assertIn('readJsonResponse(detailResponse,"Job detail request")', source)
+        self.assertIn('readJsonResponse(r,"Job status request")', source)
+        self.assertIn('fetch("/api/jobs/"+id,{headers:{"Accept":"application/json"}})', source)
+        self.assertIn('if(["completed","failed","cancelled","interrupted"].includes(j.status))', source)
 
     def test_job_polling_retries_and_exposes_manual_retry(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
@@ -44,7 +46,7 @@ class JobStatusDashboardTests(unittest.TestCase):
         self.assertNotIn('fetch("/api/jobs?limit=10"', source)
         self.assertNotIn("refreshJobHistory", source)
         self.assertIn('id="job-progress"', source)
-        self.assertIn('readJsonResponse(detailResponse,"Job detail request")', source)
+        self.assertIn('readJsonResponse(r,"Job status request")', source)
 
     def test_candidate_queue_filters_stale_rejected_and_completed_results(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
