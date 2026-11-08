@@ -15,7 +15,7 @@ from app.database import (
     mark_candidate_error, list_candidates, list_media_files, set_candidate_decision,
     get_candidate, claim_candidate_patch, finish_candidate_patch, recover_interrupted_patches,
     create_job, start_job, update_job_progress, record_job_item, finish_job,
-    get_job, list_jobs, recover_interrupted_jobs, clear_pending_review_queue,
+    get_job, list_jobs, recover_interrupted_jobs, clear_pending_review_queue, clear_saved_data,
 )
 from app.media import inspect_media
 from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError, assess_subtitle_payload
@@ -159,8 +159,10 @@ body{font:16px system-ui;margin:2rem auto;padding:0 1rem;max-width:1100px;backgr
 h1{margin-bottom:.25rem}p{color:#aebbd0}.panel{background:#1f2937;padding:1rem;border-radius:12px;margin:1rem 0}
 button{background:#2563eb;color:white;border:0;border-radius:8px;padding:.7rem 1rem;cursor:pointer}
 button:disabled{opacity:.5;cursor:not-allowed}.notice{border-left:4px solid #eab308;padding:.7rem 1rem;background:#292524}
-.candidate{background:#111827;border:1px solid #374151;border-radius:10px;padding:1rem;margin:1rem 0;min-width:0}
-.candidate h3,.candidate p{overflow-wrap:anywhere}.actions{display:flex;flex-wrap:wrap;gap:.8rem;margin-top:1rem}
+.candidate{background:#111827;border:1px solid #374151;border-radius:10px;padding:.65rem .8rem;margin:.5rem 0;min-width:0}
+.candidate h3,.candidate p{overflow-wrap:anywhere}.candidate h3{margin:.2rem 0 .4rem}.candidate p{margin:.25rem 0}
+#candidate-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:.35rem}
+.actions{display:flex;flex-wrap:wrap;gap:.8rem;margin-top:.65rem}
 .actions a{color:#93c5fd;padding:.5rem 0}.secondary{background:#4b5563}.warning{color:#fbbf24}
 input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-radius:8px;border:1px solid #64748b;background:#111827;color:#e5e7eb}
 .folder-browser{border:1px solid #475569;border-radius:10px;padding:1rem;margin:.75rem 0;background:#111827}.folder-list{list-style:none;padding:0;margin:.5rem 0}.folder-list li{padding:.45rem 0;border-bottom:1px solid #374151}.folder-entry{display:flex;align-items:center;gap:.7rem}.folder-entry input{width:auto;margin:0}.folder-path{font-family:ui-monospace,monospace;overflow-wrap:anywhere}.selected-folders{display:flex;flex-wrap:wrap;gap:.5rem}.folder-chip{background:#374151;border-radius:8px;padding:.35rem .6rem}
@@ -179,14 +181,14 @@ input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-
 <p id="provider-message" aria-live="polite"></p>
 </section>
 <section class="panel"><h2>Media scan</h2><p>Browse the mounted media directory and select one or more folders to scan.</p><button id="browse-folders" class="secondary">Browse folders</button><button id="clear-folder-selection" class="secondary" type="button">Clear selection</button><div id="selected-folders" class="selected-folders"><span class="folder-chip">/media (default)</span></div><div id="folder-browser" class="folder-browser" hidden><div class="actions"><button id="folder-up" class="secondary" type="button">Up one level</button><button id="folder-select-current" class="secondary" type="button">Select this folder</button><button id="folder-close" class="secondary" type="button">Close</button></div><p id="folder-current" class="folder-path">/media</p><ul id="folder-list" class="folder-list"></ul><p id="folder-error" class="warning" aria-live="polite"></p></div><button id="scan">Start scan</button><button id="cancel-scan" class="secondary" type="button" hidden disabled>Cancel scan</button><p id="status">Ready.</p><div id="scan-results"></div><div id="job-progress" class="candidate" aria-live="polite">No active job.</div></section>
-<section class="panel"><h2>Subtitle candidate review</h2><p>Every candidate is shown under its exact media file. Inspect the release, match rationale, and subtitle content before deciding.</p><div id="candidate-list">Loading saved candidates…</div></section>
+<section class="panel"><div class="actions" style="justify-content:space-between;align-items:center"><div><h2>Subtitle candidate review</h2><p>Review candidates for the latest scan.</p></div><button id="clear-saved-data" class="secondary" type="button">Clear saved data</button></div><div id="candidate-list">Loading saved candidates…</div><p id="clear-data-message" aria-live="polite"></p></section>
 <script>
 const scanButton=document.querySelector("#scan"),cancelScanButton=document.querySelector("#cancel-scan"),status=document.querySelector("#status"),scanResults=document.querySelector("#scan-results"),candidateList=document.querySelector("#candidate-list");
 let activeScanJobId=null;let activeTrackedJobId=null;
 function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
 function line(parent,label,value){const p=el("p");p.append(el("strong",label+": "),document.createTextNode(value===null||value===undefined?"Unknown":String(value)));parent.append(p);}
-function streams(value){if(!Array.isArray(value)||!value.length)return "None reported";return value.map(s=>[s.codec,s.language,s.title].filter(Boolean).join(" · ")||JSON.stringify(s)).join("; ");}
-function renderScan(files){scanResults.replaceChildren();for(const f of files){const card=el("article",undefined,"candidate");card.append(el("h3",f.path));card.append(el("p",f.error?"Scan error":(f.has_verified_english_subtitle?"Verified English subtitle present":"Needs subtitle review")));line(card,"Audio tracks",streams(f.audio_streams));line(card,"Existing subtitle tracks",streams(f.subtitle_streams));if(f.subtitle_candidates)line(card,"Candidate search",f.subtitle_candidates.status+" — "+f.subtitle_candidates.staged+" staged");scanResults.append(card);}}
+function streams(value){if(!Array.isArray(value)||!value.length)return "";return value.map(s=>[s.codec,s.language,s.title].filter(Boolean).join(" · ")||JSON.stringify(s)).join("; ");}
+function renderScan(files){scanResults.replaceChildren();for(const f of files){const card=el("article",undefined,"candidate");card.append(el("h3",f.path));if(f.error)card.append(el("p","Scan error: "+f.error,"warning"));else if(f.has_verified_english_subtitle)card.append(el("p","Verified English subtitle present"));const audio=streams(f.audio_streams),subs=streams(f.subtitle_streams);if(audio)line(card,"Audio tracks",audio);if(subs)line(card,"Existing subtitle tracks",subs);if(f.subtitle_candidates&&(f.subtitle_candidates.found||f.subtitle_candidates.staged))line(card,"Candidates"," "+f.subtitle_candidates.staged+" staged");if(card.children.length>1)scanResults.append(card);}}
 async function loadCandidates(){const r=await fetch("/api/candidates");const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);renderCandidates(d.candidates);}
 function renderCandidates(items){candidateList.replaceChildren();if(!items.length){candidateList.append(el("p","No saved candidates yet. Run a scan with OpenSubtitles configured."));return;}
 for(const c of items){const card=el("article",undefined,"candidate");card.append(el("h3",c.media_relative_path));card.append(el("p","Candidate #"+c.id+" · "+c.file_name));line(card,"Provider language / format",c.language+" / "+c.format);line(card,"Release",c.release||"Not provided");line(card,"Match score",c.match_score);line(card,"Exact file hash match",c.moviehash_match?"Yes":"No");line(card,"Candidate download status",c.status);line(card,"Match rationale",(c.match_reasons||[]).join("; ")||"No rationale supplied");line(card,"Content check",c.content_status+(c.content_language?" · "+c.content_language:"")+(c.content_language_confidence?" · confidence "+Number(c.content_language_confidence).toFixed(2):""));line(card,"Existing audio tracks",streams(c.inspection?.audio_streams));line(card,"Existing subtitle tracks",streams(c.inspection?.subtitle_streams));
@@ -213,10 +215,11 @@ document.querySelector("#folder-up").addEventListener("click",()=>{const parent=
 document.querySelector("#folder-select-current").addEventListener("click",()=>{selectedFolders.add(browserPath);renderSelectedFolders();});
 document.querySelector("#folder-close").addEventListener("click",()=>{document.querySelector("#folder-browser").hidden=true;});
 document.querySelector("#clear-folder-selection").addEventListener("click",()=>{selectedFolders.clear();renderSelectedFolders();});
-scanButton.addEventListener("click",async()=>{scanButton.disabled=true;cancelScanButton.hidden=true;status.textContent="Starting scan…";scanResults.replaceChildren();try{const paths=selectedFolders.size?[...selectedFolders]:[""];const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paths})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);status.textContent="Scan queued: "+d.total+" media files across "+paths.length+" folder(s).";trackJob(d.job_id);}catch(e){status.textContent="Could not start scan: "+e.message;scanButton.disabled=false;}});
+scanButton.addEventListener("click",async()=>{scanButton.disabled=true;cancelScanButton.hidden=true;status.textContent="Starting scan…";scanResults.replaceChildren();candidateList.replaceChildren(el("p","Previous scan candidates cleared. Waiting for new results…"));try{const paths=selectedFolders.size?[...selectedFolders]:[""];const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paths})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);status.textContent="Scan queued: "+d.total+" media files across "+paths.length+" folder(s).";trackJob(d.job_id);}catch(e){status.textContent="Could not start scan: "+e.message;scanButton.disabled=false;await loadCandidates();}});
 async function readJsonResponse(response,context){const body=await response.text();let data;try{data=body?JSON.parse(body):null;}catch{const preview=body.trim().slice(0,180);throw Error(context+" returned non-JSON (HTTP "+response.status+"). "+(preview||"The response body was empty."));}if(!response.ok)throw Error(data?.detail||context+" failed (HTTP "+response.status+").");if(!data||typeof data!=="object")throw Error(context+" returned an empty or invalid response.");return data;}
 async function trackJob(id){if(activeTrackedJobId===id)return;activeTrackedJobId=id;const panel=document.querySelector("#job-progress");let failures=0;let stopped=false;activeScanJobId=null;async function poll(){if(stopped)return;try{const r=await fetch("/api/jobs/"+id,{headers:{"Accept":"application/json"}});const j=await readJsonResponse(r,"Job status request");if(j.kind==="scan"&&["queued","running"].includes(j.status)){activeScanJobId=id;cancelScanButton.hidden=false;cancelScanButton.disabled=false;}else if(j.kind==="scan"){activeScanJobId=null;cancelScanButton.hidden=true;}if(typeof j.id!=="number"||typeof j.status!=="string")throw Error("Job status response is missing its job identity or status.");failures=0;panel.replaceChildren();panel.append(el("strong","Job #"+j.id+" · "+j.kind+" · "+j.status));line(panel,"Progress",j.completed+"/"+j.total+" · "+j.succeeded+" succeeded · "+j.failed+" failed");line(panel,"Phase",j.phase||"queued");line(panel,"Current file",j.current_file||"—");if(j.error)panel.append(el("p",j.error,"warning"));if(["completed","failed","cancelled","interrupted"].includes(j.status)){stopped=true;activeTrackedJobId=null;scanButton.disabled=false;cancelScanButton.hidden=true;activeScanJobId=null;status.textContent=j.kind==="scan"?"Scan "+j.status+".":"Injection "+j.status+".";await loadCandidates();return;}setTimeout(poll,1000);}catch(e){failures++;panel.replaceChildren();panel.append(el("p","Job #"+id+" is still being tracked, but its status could not be read: "+e.message,"warning"));if(failures<5){panel.append(el("p","Retrying status check ("+failures+"/5)…"));setTimeout(poll,Math.min(1000*Math.pow(2,failures-1),8000));return;}stopped=true;activeTrackedJobId=null;scanButton.disabled=false;cancelScanButton.hidden=true;activeScanJobId=null;status.textContent="Job #"+id+" may still be running; status tracking paused after repeated request failures.";const retry=el("button","Retry status check");retry.addEventListener("click",()=>{stopped=false;failures=0;retry.remove();poll();});panel.append(retry);}}poll();}
-cancelScanButton.addEventListener("click",async()=>{if(activeScanJobId===null)return;cancelScanButton.disabled=true;status.textContent="Requesting scan cancellation…";try{const r=await fetch("/api/jobs/"+activeScanJobId+"/cancel",{method:"POST",headers:{"Accept":"application/json"}});const d=await readJsonResponse(r,"Cancel scan request");status.textContent=d.status==="cancelled"?"Scan cancelled. The current file, if any, was allowed to finish.":"Scan is no longer active ("+d.status+").";cancelScanButton.hidden=true;activeScanJobId=null;}catch(e){status.textContent="Could not cancel scan: "+e.message;cancelScanButton.disabled=false;}});\nloadCandidates().catch(e=>candidateList.textContent="Could not load candidates: "+e.message);
+cancelScanButton.addEventListener("click",async()=>{if(activeScanJobId===null)return;cancelScanButton.disabled=true;status.textContent="Requesting scan cancellation…";try{const r=await fetch("/api/jobs/"+activeScanJobId+"/cancel",{method:"POST",headers:{"Accept":"application/json"}});const d=await readJsonResponse(r,"Cancel scan request");status.textContent=d.status==="cancelled"?"Scan cancelled. The current file, if any, was allowed to finish.":"Scan is no longer active ("+d.status+").";cancelScanButton.hidden=true;activeScanJobId=null;}catch(e){status.textContent="Could not cancel scan: "+e.message;cancelScanButton.disabled=false;}});\ndocument.querySelector("#clear-saved-data").addEventListener("click",async()=>{if(!confirm("Permanently clear all saved jobs, scan results, subtitle candidates, and patch history? This does not modify media files."))return;const button=document.querySelector("#clear-saved-data"),message=document.querySelector("#clear-data-message");button.disabled=true;message.textContent="Clearing saved data…";try{const r=await fetch("/api/data/clear",{method:"POST",headers:{"Accept":"application/json"}});const d=await readJsonResponse(r,"Clear saved data request");candidateList.replaceChildren(el("p","No saved candidates. Run a new scan to find subtitles."));scanResults.replaceChildren();document.querySelector("#job-progress").replaceChildren(el("p","No saved job progress."));status.textContent="Saved data cleared.";message.textContent="Cleared saved jobs, results, candidates, and patch history.";}catch(e){message.textContent="Could not clear saved data: "+e.message;}finally{button.disabled=false;}});
+loadCandidates().catch(e=>candidateList.textContent="Could not load candidates: "+e.message);
 async function resumeLatestJob(){
  try{
   const r=await fetch("/api/jobs?limit=20",{headers:{"Accept":"application/json"}});
@@ -335,6 +338,26 @@ def candidate_should_be_visible(row: dict) -> bool:
         and row.get("review_decision") != "rejected"
         and row.get("patch_status") != "patched"
     )
+
+
+@app.post("/api/data/clear")
+def clear_data():
+    try:
+        staged_paths = clear_saved_data()
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    staging_root = Path(settings.subtitle_staging_path).resolve()
+    removed = 0
+    for value in staged_paths:
+        try:
+            path = Path(value).resolve()
+            if path.is_relative_to(staging_root) and path.is_file():
+                path.unlink()
+                removed += 1
+        except (OSError, RuntimeError, ValueError):
+            logger.warning("saved_candidate_cleanup_failed", extra={"event":"saved_candidate_cleanup_failed","phase":"data_clear"})
+    logger.info("saved_data_cleared", extra={"event":"saved_data_cleared","phase":"data_clear","status":"completed"})
+    return {"ok":True,"staged_files_removed":removed}
 
 
 @app.get("/api/candidates")
@@ -644,6 +667,14 @@ def scan(request: ScanRequest, background_tasks: BackgroundTasks):
             roots.append(candidate)
     if not roots:
         raise HTTPException(status_code=400, detail="Select at least one folder to scan.")
+    for staged_path in clear_pending_review_queue():
+        try:
+            staging_root = Path(settings.subtitle_staging_path).resolve()
+            candidate_path = Path(staged_path).resolve()
+            if candidate_path.is_relative_to(staging_root) and candidate_path.is_file():
+                candidate_path.unlink()
+        except (OSError, RuntimeError, ValueError):
+            logger.warning("stale_candidate_cleanup_failed", extra={"event":"stale_candidate_cleanup_failed","phase":"scan_reset"})
     try:
         paths = []
         seen = set()
@@ -655,14 +686,6 @@ def scan(request: ScanRequest, background_tasks: BackgroundTasks):
                     paths.append(canonical)
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    for staged_path in clear_pending_review_queue():
-        try:
-            staging_root = Path(settings.subtitle_staging_path).resolve()
-            candidate_path = Path(staged_path).resolve()
-            if candidate_path.is_relative_to(staging_root) and candidate_path.is_file():
-                candidate_path.unlink()
-        except (OSError, RuntimeError, ValueError):
-            logger.warning("stale_candidate_cleanup_failed", extra={"event":"stale_candidate_cleanup_failed","phase":"scan_reset"})
     job = create_job("scan", total=len(paths), metadata={"scan_roots":[str(root.relative_to(media_root)) for root in roots]})
     background_tasks.add_task(_scan_worker, job["id"], media_root, paths)
     logger.info("scan_job_queued", extra={"event":"scan_job_queued","job_id":job["id"],

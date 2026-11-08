@@ -49,7 +49,7 @@ class ScanCancellationTests(unittest.TestCase):
             cancel_job(job["id"])
         self.assertEqual(raised.exception.status_code, 409)
 
-    def test_new_scan_clear_removes_only_pending_unpatched_candidates(self):
+    def test_new_scan_clear_removes_reviewed_and_patched_candidates_too(self):
         with connect() as db:
             db.execute("""INSERT INTO subtitle_candidates(media_relative_path,file_id,file_name,language,format,review_decision,patch_status,staged_path) VALUES ('pending.mkv',1,'pending.srt','en','srt','pending','not_started','/staging/pending.srt')""")
             db.execute("""INSERT INTO subtitle_candidates(media_relative_path,file_id,file_name,language,format,review_decision,patch_status) VALUES ('approved.mkv',2,'approved.srt','en','srt','approved','not_started')""")
@@ -58,7 +58,7 @@ class ScanCancellationTests(unittest.TestCase):
         self.assertEqual(staged, ["/staging/pending.srt"])
         with connect() as db:
             rows = db.execute("SELECT media_relative_path FROM subtitle_candidates ORDER BY media_relative_path").fetchall()
-        self.assertEqual([row["media_relative_path"] for row in rows], ["approved.mkv", "patched.mkv"])
+        self.assertEqual([row["media_relative_path"] for row in rows], [])
 
     def test_worker_does_not_start_a_cancelled_queued_scan(self):
         job = create_job("scan", total=1)

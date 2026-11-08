@@ -281,22 +281,51 @@ def mark_candidate_error(candidate_id: int, error: str, status: str = 'download_
 
 
 def clear_pending_review_queue() -> list[str]:
-    """Remove only unreviewed, unpatched candidates when a new scan starts.
+    """Remove candidates from prior scans, retaining only active/recovery operations.
 
-    Approved/rejected decisions and any candidate with patch activity are retained.
+    Running/interrupted injections remain available for safety and recovery.
     Return staged paths so callers can safely clean up orphaned review downloads.
     """
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
         rows = db.execute(
             """SELECT staged_path FROM subtitle_candidates
-               WHERE review_decision='pending' AND patch_status='not_started'"""
+               WHERE patch_status NOT IN ('running', 'interrupted')"""
         ).fetchall()
         db.execute(
             """DELETE FROM subtitle_candidates
-               WHERE review_decision='pending' AND patch_status='not_started'"""
+               WHERE patch_status NOT IN ('running', 'interrupted')"""
         )
         return [row["staged_path"] for row in rows if row["staged_path"]]
+
+
+def clear_saved_data() -> list[str]:
+    """Delete saved jobs, scan results, candidates, and patch history.
+
+    Refuse to clear while any background job is active. Return staged files for
+    safe filesystem cleanup by the API layer.
+    """
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        active = db.execute(
+            "SELECT id FROM jobs WHERE status IN ('queued', 'running') LIMIT 1"
+        ).fetchone()
+        if active:
+            raise ValueError("Wait for active jobs to finish before clearing saved data.")
+        injecting = db.execute(
+            "SELECT id FROM subtitle_candidates WHERE patch_status='running' LIMIT 1"
+        ).fetchone()
+        if injecting:
+            raise ValueError("Wait for active injections to finish before clearing saved data.")
+        staged = db.execute(
+            "SELECT staged_path FROM subtitle_candidates WHERE staged_path IS NOT NULL"
+        ).fetchall()
+        db.execute("DELETE FROM job_items")
+        db.execute("DELETE FROM jobs")
+        db.execute("DELETE FROM subtitle_candidates")
+        db.execute("DELETE FROM media_files")
+        db.execute("DELETE FROM patch_history")
+        return [row["staged_path"] for row in staged if row["staged_path"]]
 
 
 def list_candidates(media_relative_path: str | None = None) -> list[dict]:
