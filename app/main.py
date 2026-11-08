@@ -298,7 +298,7 @@ def media_directories(path: str = ""):
         raise HTTPException(status_code=403, detail="Could not read this folder.") from exc
     directories.sort(key=lambda item: item["name"].casefold())
     current_relative = current.relative_to(media_root).as_posix()
-    parent_relative = None if current == media_root else current.parent.relative_to(media_root).as_posix()
+    parent_relative = None if current == media_root else ("" if current.parent == media_root else current.parent.relative_to(media_root).as_posix())
     return {"path": "" if current_relative == "." else current_relative,
             "display_path": "/media" if current_relative == "." else "/media/" + current_relative,
             "parent_path": parent_relative, "directories": directories}
