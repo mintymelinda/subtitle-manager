@@ -39,18 +39,20 @@ class Issue26CleanupTests(unittest.TestCase):
             claim_candidate_patch(row["id"])
         return row["id"]
 
-    def test_new_scan_removes_only_pending_unpatched_candidates(self):
-        pending = self.stage(1)
+    def test_new_scan_removes_all_prior_candidates_except_active_recovery(self):
+        self.stage(1)
         approved = self.stage(2)
         set_candidate_decision(approved, "approved")
         patched = self.stage(3)
         finish_candidate_patch(patched, "patched", {"test": True})
         paths = clear_pending_review_queue()
-        self.assertEqual(paths, [str(Path(self.temp.name) / "1.srt")])
         self.assertEqual(
-            [row["id"] for row in list_candidates()],
-            [approved, patched],
+            set(paths),
+            {str(Path(self.temp.name) / "1.srt"),
+             str(Path(self.temp.name) / "2.srt"),
+             str(Path(self.temp.name) / "3.srt")},
         )
+        self.assertEqual(list_candidates(), [])
 
     def test_new_scan_retains_only_active_injection_recovery_record(self):
         active = self.stage(3, patch_status="running")
