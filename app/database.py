@@ -281,20 +281,20 @@ def mark_candidate_error(candidate_id: int, error: str, status: str = 'download_
 
 
 def clear_pending_review_queue() -> list[str]:
-    """Remove only pending, unpatched candidates when a new scan starts.
+    """Remove candidates from prior scans, retaining only active/recovery operations.
 
-    Reviewed candidates and candidates with patch activity are retained.
+    Running/interrupted injections remain available for safety and recovery.
     Return staged paths so callers can safely clean up orphaned review downloads.
     """
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
         rows = db.execute(
             """SELECT staged_path FROM subtitle_candidates
-               WHERE review_decision='pending' AND patch_status='not_started'"""
+               WHERE patch_status NOT IN ('running', 'interrupted')"""
         ).fetchall()
         db.execute(
             """DELETE FROM subtitle_candidates
-               WHERE review_decision='pending' AND patch_status='not_started'"""
+               WHERE patch_status NOT IN ('running', 'interrupted')"""
         )
         return [row["staged_path"] for row in rows if row["staged_path"]]
 
