@@ -5,7 +5,7 @@ from pathlib import Path
 from app.config import settings
 from app.database import (
     initialize, create_job, start_job, finish_job, record_scan, save_candidate,
-    mark_candidate_staged, set_candidate_decision, list_candidates,
+    mark_candidate_staged, set_candidate_decision, finish_candidate_patch, list_candidates,
     clear_pending_review_queue, clear_saved_data, list_jobs, list_media_files,
 )
 
@@ -39,13 +39,18 @@ class Issue26CleanupTests(unittest.TestCase):
             claim_candidate_patch(row["id"])
         return row["id"]
 
-    def test_new_scan_removes_all_prior_candidates_not_only_pending_reviews(self):
+    def test_new_scan_removes_only_pending_unpatched_candidates(self):
         pending = self.stage(1)
         approved = self.stage(2)
         set_candidate_decision(approved, "approved")
+        patched = self.stage(3)
+        finish_candidate_patch(patched, "patched", {"test": True})
         paths = clear_pending_review_queue()
-        self.assertEqual(len(paths), 2)
-        self.assertEqual(list_candidates(), [])
+        self.assertEqual(paths, [str(Path(self.temp.name) / "1.srt")])
+        self.assertEqual(
+            [row["id"] for row in list_candidates()],
+            [approved, patched],
+        )
 
     def test_new_scan_retains_only_active_injection_recovery_record(self):
         active = self.stage(3, patch_status="running")
