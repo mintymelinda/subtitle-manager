@@ -31,6 +31,7 @@ A self-hosted web application for finding missing English subtitles and adding a
 - Before replacement, the working MKV is checked for unchanged video/audio streams, retained existing subtitle tracks, and a newly added English subtitle track. The output is verified again after atomic replacement.
 - Original file mode and timestamps are copied to the replacement; ownership is preserved where container permissions allow. Same-directory recovery copies remain available after failures and in test mode.
 - Responsive web dashboard to start scans, review persisted media inspection and track summaries, preview or download staged candidates, and record explicit per-file candidate approval or rejection.
+- In-dashboard mounted-media folder browser with nested navigation and multi-folder selection; directory listing and scan requests are confined to `/media` and reject symlink traversal.
 - Persistent scan, review, and injection jobs with queued/running/completed/failed/interrupted states, phase/current-file reporting, progress counters, and per-file outcomes in SQLite.
 - Live dashboard polling for active job progress and a recent activity/history view that survives application restarts.
 - Structured JSON application logs with UTC timestamps, event/job/candidate context, exception details, and recursive redaction of API keys, passwords, tokens, authorization headers, and cookies.
@@ -74,7 +75,7 @@ Existing installations that still have OpenSubtitles values in `.env` are suppor
    docker compose up -d --build
    ```
 
-4. Open http://localhost:8080, enter the folder you want to scan (default `/media`, or a subfolder such as `/media/Movies`), and start the scan. The folder prompt is restricted to the mounted media volume; it cannot browse outside that mount.
+4. Open http://localhost:8080, choose **Browse folders**, navigate the mounted directory, and select one or more folders to scan. If none are selected, the scan defaults to `/media`. The browser is restricted to the mounted media volume and does not follow symbolic links.
 
 Test mode is enabled by default. After reviewing and approving a candidate, use **Inject approved subtitle** to patch that one MKV. Test mode performs the actual replacement and retains the original recovery copy beside the media file. Set `TEST_MODE=false` only when ready for normal operation; in normal mode the recovery copy is deleted only after successful post-replacement verification. The current patcher supports MKV containers only.
 
