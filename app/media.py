@@ -9,6 +9,50 @@ from langdetect.lang_detect_exception import LangDetectException
 DetectorFactory.seed = 0
 TEXT_SUBTITLE_CODECS = {"subrip", "ass", "ssa", "mov_text", "webvtt", "text"}
 
+# Stream titles are free-form, but often carry an explicit language hint.
+# Complete-token matching avoids interpreting ordinary words as language codes.
+_SUBTITLE_TITLE_LANGUAGE_ALIASES = {
+    "en": {"en", "eng", "english"},
+    "de": {"de", "deu", "ger", "german", "deutsch"},
+    "fr": {"fr", "fra", "fre", "french", "francais", "français"},
+    "es": {"es", "spa", "spanish", "espanol", "español", "castilian"},
+    "it": {"it", "ita", "italian", "italiano"},
+    "pt": {"pt", "por", "portuguese", "português"},
+    "nl": {"nl", "nld", "dut", "dutch", "nederlands"},
+    "ja": {"ja", "jpn", "japanese", "日本語"},
+    "zh": {"zh", "zho", "chi", "chinese", "中文"},
+    "ru": {"ru", "rus", "russian", "русский"},
+    "ko": {"ko", "kor", "korean", "한국어"},
+    "pl": {"pl", "pol", "polish", "polski"},
+    "sv": {"sv", "swe", "swedish", "svenska"},
+    "da": {"da", "dan", "danish", "dansk"},
+    "no": {"no", "nor", "norwegian", "norsk"},
+    "fi": {"fi", "fin", "finnish", "suomi"},
+    "tr": {"tr", "tur", "turkish", "türkçe"},
+    "ar": {"ar", "ara", "arabic", "العربية"},
+    "he": {"he", "heb", "hebrew", "עברית"},
+    "el": {"el", "ell", "gre", "greek", "ελληνικά"},
+    "cs": {"cs", "ces", "cze", "czech", "čeština"},
+    "hu": {"hu", "hun", "hungarian", "magyar"},
+    "ro": {"ro", "ron", "rum", "romanian", "română"},
+    "uk": {"uk", "ukr", "ukrainian", "українська"},
+    "th": {"th", "tha", "thai", "ไทย"},
+    "vi": {"vi", "vie", "vietnamese"},
+}
+_TITLE_LANGUAGE_LOOKUP = {
+    alias: language
+    for language, aliases in _SUBTITLE_TITLE_LANGUAGE_ALIASES.items()
+    for alias in aliases
+}
+
+
+def _subtitle_title_language(title: str) -> str | None:
+    """Return a language explicitly named in a subtitle stream title."""
+    tokens = re.findall(r"[\wÀ-ÿ]+", str(title or "").casefold())
+    matches = {_TITLE_LANGUAGE_LOOKUP[token] for token in tokens
+               if token in _TITLE_LANGUAGE_LOOKUP}
+    return next(iter(matches)) if len(matches) == 1 else None
+
 
 def _subtitle_content_language(path: Path, stream_index: int, codec: str) -> dict:
     if codec not in TEXT_SUBTITLE_CODECS:
@@ -72,11 +116,17 @@ def inspect_media(path: Path) -> dict:
         tags = stream.get("tags") or {}
         codec = stream.get("codec_name", "")
         content = _subtitle_content_language(path, stream.get("index"), codec)
+        title = tags.get("title", "")
+        title_language = _subtitle_title_language(title)
+        # Explicit non-English titles override misleading metadata and detector output.
+        if title_language and title_language != "en":
+            content = {**content, "status": "other", "language": title_language}
         subtitles.append({
             "index": stream.get("index"),
             "codec": codec,
             "language_metadata": tags.get("language", "und"),
-            "title": tags.get("title", ""),
+            "title": title,
+            "title_language": title_language,
             "content_language": content["language"],
             "content_language_confidence": content["confidence"],
             "content_status": content["status"]
