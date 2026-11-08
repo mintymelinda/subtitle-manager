@@ -1,4 +1,3 @@
-import sqlite3
 import threading
 
 from app import database
@@ -81,9 +80,12 @@ def test_write_contention_waits_instead_of_failing_immediately(tmp_path, monkeyp
     writer.start()
     try:
         assert writer_ready.wait(timeout=5)
-        release_writer.set()
-        # The operation succeeds after the competing transaction releases.
+        # Keep the first writer open briefly. The second writer must wait for
+        # SQLite's busy timeout machinery rather than fail immediately.
+        release_timer = threading.Timer(0.15, release_writer.set)
+        release_timer.start()
         database.update_job_progress(job["id"], phase="after-contention")
+        release_timer.join(timeout=2)
     finally:
         release_writer.set()
         writer.join(timeout=5)
