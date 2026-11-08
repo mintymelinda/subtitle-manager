@@ -6,7 +6,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from app.config import settings
-from app.database import initialize, create_job, finish_job, get_job
+from app.database import initialize, create_job, finish_job, get_job, clear_pending_review_queue, connect
 from app.main import cancel_job, _scan_worker
 
 
@@ -48,6 +48,17 @@ class ScanCancellationTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             cancel_job(job["id"])
         self.assertEqual(raised.exception.status_code, 409)
+
+    def test_new_scan_clear_removes_only_pending_unpatched_candidates(self):
+        with connect() as db:
+            db.execute("""INSERT INTO subtitle_candidates(media_relative_path,file_id,file_name,language,format,review_decision,patch_status,staged_path) VALUES ('pending.mkv',1,'pending.srt','en','srt','pending','not_started','/staging/pending.srt')""")
+            db.execute("""INSERT INTO subtitle_candidates(media_relative_path,file_id,file_name,language,format,review_decision,patch_status) VALUES ('approved.mkv',2,'approved.srt','en','srt','approved','not_started')""")
+            db.execute("""INSERT INTO subtitle_candidates(media_relative_path,file_id,file_name,language,format,review_decision,patch_status) VALUES ('patched.mkv',3,'patched.srt','en','srt','pending','patched')""")
+        staged = clear_pending_review_queue()
+        self.assertEqual(staged, ["/staging/pending.srt"])
+        with connect() as db:
+            rows = db.execute("SELECT media_relative_path FROM subtitle_candidates ORDER BY media_relative_path").fetchall()
+        self.assertEqual([row["media_relative_path"] for row in rows], ["approved.mkv", "patched.mkv"])
 
     def test_worker_does_not_start_a_cancelled_queued_scan(self):
         job = create_job("scan", total=1)
