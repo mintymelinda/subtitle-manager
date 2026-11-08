@@ -222,11 +222,11 @@ cancelScanButton.addEventListener("click",async()=>{if(activeScanJobId===null)re
 refreshJobHistory();
 async function resumeLatestJob(){
  try{
-  const r=await fetch("/api/jobs?limit=1",{headers:{"Accept":"application/json"}});
+  const r=await fetch("/api/jobs?limit=20",{headers:{"Accept":"application/json"}});
   const d=await readJsonResponse(r,"Restore job progress");
-  const latest=d.jobs?.[0];if(!latest)return;
+  const latest=d.jobs?.find(j=>["queued","running"].includes(j.status))||d.jobs?.[0];if(!latest)return;
   if(["queued","running"].includes(latest.status)){
-   scanButton.disabled=true;status.textContent="Restoring "+latest.kind+" job #"+latest.id+"…";trackJob(latest.id);return;
+   if(latest.kind==="scan")scanButton.disabled=true;status.textContent="Restoring "+latest.kind+" job #"+latest.id+"…";trackJob(latest.id);return;
   }
   const panel=document.querySelector("#job-progress");panel.replaceChildren();
   panel.append(el("strong","Job #"+latest.id+" · "+latest.kind+" · "+latest.status));
