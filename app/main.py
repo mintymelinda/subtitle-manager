@@ -182,7 +182,8 @@ input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-
 <section class="panel"><h2>Recent activity and processing history</h2><div id="job-history">Loading job history…</div></section>
 <section class="panel"><h2>Subtitle candidate review</h2><p>Every candidate is shown under its exact media file. Inspect the release, match rationale, and subtitle content before deciding.</p><div id="candidate-list">Loading saved candidates…</div></section>
 <script>
-const scanButton=document.querySelector("#scan"),cancelScanButton=document.querySelector("#cancel-scan"),status=document.querySelector("#status"),scanResults=document.querySelector("#scan-results"),candidateList=document.querySelector("#candidate-list");\nlet activeScanJobId=null;
+const scanButton=document.querySelector("#scan"),cancelScanButton=document.querySelector("#cancel-scan"),status=document.querySelector("#status"),scanResults=document.querySelector("#scan-results"),candidateList=document.querySelector("#candidate-list");
+let activeScanJobId=null;
 function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
 function line(parent,label,value){const p=el("p");p.append(el("strong",label+": "),document.createTextNode(value===null||value===undefined?"Unknown":String(value)));parent.append(p);}
 function streams(value){if(!Array.isArray(value)||!value.length)return "None reported";return value.map(s=>[s.codec,s.language,s.title].filter(Boolean).join(" · ")||JSON.stringify(s)).join("; ");}
