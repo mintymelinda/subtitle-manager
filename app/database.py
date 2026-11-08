@@ -1,20 +1,50 @@
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 from app.config import settings
 
 
+SQLITE_BUSY_TIMEOUT_MS = 30_000
+
+
+@contextmanager
 def connect():
+    """Open a short-lived SQLite connection with bounded lock waiting.
+
+    The context manager commits successful work, rolls back failures, and always
+    closes the connection. sqlite3.Connection's built-in context manager does
+    not close connections, which can otherwise leave file handles alive longer
+    than intended.
+    """
     db_path = Path(settings.database_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(db_path)
+    connection = sqlite3.connect(
+        db_path,
+        timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
+        check_same_thread=True,
+    )
     connection.row_factory = sqlite3.Row
-    return connection
+    connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    connection.execute("PRAGMA foreign_keys=ON")
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def initialize():
     with connect() as db:
+        # WAL allows dashboard readers to continue while background workers
+        # commit scan/download/job progress. busy_timeout handles brief writer
+        # contention without immediately surfacing SQLITE_BUSY to API callers.
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA synchronous=NORMAL")
         db.executescript("""
         CREATE TABLE IF NOT EXISTS media_files (
             id INTEGER PRIMARY KEY,
