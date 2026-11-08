@@ -72,6 +72,11 @@ class Issue26CleanupTests(unittest.TestCase):
             clear_saved_data()
         self.assertEqual(len(list_jobs()), 1)
 
+    def test_clear_saved_data_refuses_to_run_during_injection_even_without_job_row(self):
+        self.stage(6, patch_status="running")
+        with self.assertRaisesRegex(ValueError, "active injections"):
+            clear_saved_data()
+
 
 class Issue26DashboardTests(unittest.TestCase):
     def test_dashboard_has_clear_control_and_hides_empty_track_placeholders(self):
