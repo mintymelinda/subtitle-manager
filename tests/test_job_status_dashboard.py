@@ -21,5 +21,17 @@ class JobStatusDashboardTests(unittest.TestCase):
         self.assertIn("may still be running", source)
 
 
+    def test_dashboard_limits_history_and_hides_successful_per_file_scan_entries(self):
+        source = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+        self.assertIn('fetch("/api/jobs?limit=10"', source)
+        self.assertIn('if(j.kind==="scan"&&item.status==="completed")continue;', source)
+
+    def test_candidate_queue_filters_stale_rejected_and_completed_results(self):
+        source = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+        self.assertIn("def candidate_should_be_visible(row: dict) -> bool:", source)
+        self.assertIn('row.get("review_decision") != "rejected"', source)
+        self.assertIn('row.get("patch_status") != "patched"', source)
+        self.assertIn('rows = [row for row in rows if candidate_should_be_visible(row)]', source)
+
 if __name__ == "__main__":
     unittest.main()
