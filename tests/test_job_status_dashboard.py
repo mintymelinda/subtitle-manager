@@ -12,7 +12,7 @@ class JobStatusDashboardTests(unittest.TestCase):
         self.assertIn("JSON.parse(body)", source)
         self.assertIn("returned non-JSON (HTTP ", source)
         self.assertIn('headers:{"Accept":"application/json"}', source)
-        self.assertIn('readJsonResponse(r,"Job history request")', source)
+        self.assertNotIn('readJsonResponse(r,"Job history request")', source)
         self.assertIn('readJsonResponse(detailResponse,"Job detail request")', source)
 
     def test_job_polling_retries_and_exposes_manual_retry(self):
@@ -38,10 +38,13 @@ class JobStatusDashboardTests(unittest.TestCase):
         self.assertTrue(candidate_should_be_visible({**base, "patch_status": "running"}))
         self.assertFalse(candidate_should_be_visible({**base, "status": "download_failed"}))
 
-    def test_dashboard_limits_history_and_hides_successful_per_file_scan_entries(self):
+    def test_dashboard_removes_recent_activity_history_but_keeps_active_progress(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
-        self.assertIn('fetch("/api/jobs?limit=10"', source)
-        self.assertIn('if(j.kind==="scan"&&item.status==="completed")continue;', source)
+        self.assertNotIn("Recent activity and processing history", source)
+        self.assertNotIn('fetch("/api/jobs?limit=10"', source)
+        self.assertNotIn("refreshJobHistory", source)
+        self.assertIn('id="job-progress"', source)
+        self.assertIn('readJsonResponse(detailResponse,"Job detail request")', source)
 
     def test_candidate_queue_filters_stale_rejected_and_completed_results(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
