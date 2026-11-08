@@ -48,7 +48,7 @@ _TITLE_LANGUAGE_LOOKUP = {
 
 def _subtitle_title_language(title: str) -> str | None:
     """Return a language explicitly named in a subtitle stream title."""
-    tokens = re.findall(r"[\\wÀ-ÿ]+", str(title or "").casefold())
+    tokens = re.findall(r"[\wÀ-ÿ]+", str(title or "").casefold())
     matches = {_TITLE_LANGUAGE_LOOKUP[token] for token in tokens
                if token in _TITLE_LANGUAGE_LOOKUP}
     return next(iter(matches)) if len(matches) == 1 else None
