@@ -50,14 +50,14 @@ Application logs are emitted as one JSON object per line to standard output, sui
 
 ## OpenSubtitles setup
 
-1. Create an API consumer and obtain an API key from [OpenSubtitles.com](https://www.opensubtitles.com/en/consumers).
-2. Copy `.env.example` to `.env` and set `OPEN_SUBTITLES_API_KEY`.
-3. Optionally set `OPEN_SUBTITLES_USERNAME` and `OPEN_SUBTITLES_PASSWORD` to use your own account's download allowance. Without them, downloads use the API key's anonymous allowance.
-4. Set `OPEN_SUBTITLES_MAX_CANDIDATES_PER_FILE` to control how many top-ranked results are downloaded for each media file (default: 2; maximum: 5).
-5. Keep `SUBTITLE_STAGING_PATH` outside the media mount. The default is `/app/data/staged-subtitles`, persisted by the Compose `./data:/app/data` volume.
+1. Open the **OpenSubtitles setup** section in the web dashboard.
+2. Create an API consumer and obtain an API key from [OpenSubtitles.com](https://www.opensubtitles.com/en/consumers).
+3. Enter the API key and optionally your OpenSubtitles username and password, then save. Account credentials use your own account's download allowance; without them, downloads use the API key's anonymous allowance.
+4. Set the maximum number of top-ranked candidates downloaded per media file (1–5; default 2), then use **Test connection** to validate the API key and optional account login.
 
-The API key and optional account credentials are read only by the server. They are not returned by `/api/config` or written to application logs. OpenSubtitles download quotas and rate limits are controlled by the provider and may change.
+Provider settings are written atomically to `/app/data/opensubtitles-settings.json` with owner-only file permissions. The Compose `./data:/app/data` volume keeps them across container recreation and image updates. Secrets are never returned by the settings or `/api/config` endpoints and are excluded from application log messages. Leave credential fields blank to retain saved values; use the explicit checkbox to clear optional account credentials. OpenSubtitles quotas and rate limits are controlled by the provider and may change.
 
+Existing installations that still have OpenSubtitles values in `.env` are supported as a one-time fallback until settings are saved through the dashboard.
 ## Requirements
 
 - Docker Engine and Docker Compose.
@@ -66,7 +66,7 @@ The API key and optional account credentials are read only by the server. They a
 
 ## Quick start
 
-1. Copy `.env.example` to `.env` and add your OpenSubtitles API key.
+1. Copy `.env.example` to `.env` and adjust host-level settings such as the media path and port. Configure OpenSubtitles in the web dashboard after startup.
 2. The Compose volume maps the NAS media directory `/volume1/media` to `/media` in the container by default. You can override the host-side `MEDIA_PATH` in `.env` if the NAS folder differs.
 3. Start the service:
 
