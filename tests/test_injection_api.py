@@ -11,7 +11,7 @@ from app.database import (
     set_candidate_decision, get_candidate,
 )
 from app.main import (
-    InjectRequest, MediaEditRequest, candidates, edit_scanned_media, inject_candidate,
+    InjectRequest, MediaEditRequest, candidates, dashboard, edit_scanned_media, inject_candidate,
 )
 
 
@@ -180,6 +180,24 @@ class InjectionApiSafetyTests(unittest.TestCase):
                 ))
         self.assertEqual(error.exception.status_code, 404)
         patcher.assert_not_called()
+
+
+    def test_dashboard_supports_multi_select_non_candidate_batch_edits(self):
+        html = dashboard().body.decode("utf-8")
+        self.assertIn('id="show-all-scanned-files"', html)
+        self.assertIn('id="batch-run" disabled>Approve &amp; patch selected</button>', html)
+        self.assertIn('id="select-all-candidates"', html)
+        self.assertIn("const selectedMediaPaths = new Set();", html)
+        self.assertIn('class="candidate-select media-edit-select"', html)
+        self.assertIn("selectedMediaPaths.has(c.media_relative_path)", html)
+        self.assertIn('fetch("/api/media-files/edit"', html)
+
+    def test_dashboard_retains_media_target_selection_across_renders(self):
+        html = dashboard().body.decode("utf-8")
+        self.assertIn("for (const path of [...selectedMediaPaths])", html)
+        self.assertIn("selectedMediaPaths.add(c.media_relative_path)", html)
+        self.assertIn("selectedMediaPaths.clear()", html)
+        self.assertIn("const mediaPaths = [...selectedMediaPaths]", html)
 
 if __name__ == "__main__":
     unittest.main()
