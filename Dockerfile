@@ -1,5 +1,9 @@
 FROM python:3.12-slim
 
+LABEL org.opencontainers.image.source="https://github.com/mintymelinda/subtitle-manager" \
+      org.opencontainers.image.description="Self-hosted subtitle discovery and safe MKV subtitle injection." \
+      org.opencontainers.image.licenses="MIT"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     mkvtoolnix \
