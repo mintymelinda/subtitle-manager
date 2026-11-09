@@ -38,10 +38,10 @@ class TransactionalPatcherTests(unittest.TestCase):
         output = Path(command[command.index("-o") + 1])
         output.write_bytes(b"muxed media bytes")
 
-    def run_patch(self, probes, test_mode=True):
+    def run_patch(self, probes, test_mode=True, has_content=True):
         with patch("app.patcher._probe", side_effect=probes), patch(
-            "app.patcher.subprocess.run", side_effect=self.fake_mux
-        ):
+            "app.patcher._subtitle_has_content", return_value=has_content
+        ), patch("app.patcher.subprocess.run", side_effect=self.fake_mux):
             return patch_mkv(self.source, self.subtitle, approved=True, test_mode=test_mode)
 
     def test_test_mode_patches_one_file_and_retains_recovery_copy(self):
@@ -58,6 +58,14 @@ class TransactionalPatcherTests(unittest.TestCase):
         self.assertIsNone(result["backup"])
         self.assertFalse(list(self.root.glob("*.recovery-*.bak")))
         self.assertNotEqual(self.source.read_bytes(), self.original)
+
+    def test_empty_added_subtitle_is_rejected_before_replacement(self):
+        with self.assertRaisesRegex(RuntimeError, "contains no subtitle cues"):
+            self.run_patch([self.before, self.valid_after], has_content=False)
+        self.assertEqual(self.source.read_bytes(), self.original)
+        backups = list(self.root.glob(".*.recovery-*.bak"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), self.original)
 
     def test_pre_replacement_validation_failure_leaves_original_and_backup(self):
         invalid = {"format": {"format_name": "matroska"}, "streams": [stream("video", "h264"), stream("audio", "aac")]}
