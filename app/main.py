@@ -16,6 +16,7 @@ from app.database import (
     get_candidate, claim_candidate_patch, finish_candidate_patch, recover_interrupted_patches,
     create_job, start_job, update_job_progress, record_job_item, finish_job,
     get_job, list_jobs, recover_interrupted_jobs, clear_pending_review_queue, clear_saved_data,
+    list_media_files, record_media_patch, reset_candidate_reviews_for_media,
 )
 from app.media import inspect_media
 from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError, assess_subtitle_payload
@@ -43,6 +44,14 @@ class CandidateDecisionRequest(BaseModel):
 class InjectRequest(BaseModel):
     confirm: bool = False
     keep_subtitle_indices: list[int] | None = None
+
+
+class MediaEditRequest(BaseModel):
+    confirm: bool = False
+    media_relative_path: str
+    keep_subtitle_indices: list[int]
+    reprocess_if_empty: bool = False
+    target_languages: list[str] = ["en"]
 
 
 class OpenSubtitlesSettingsRequest(BaseModel):
@@ -252,7 +261,7 @@ input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-
 <p id="provider-message" aria-live="polite"></p>
 </section>
 <section class="panel"><h2>Media scan</h2><p>Browse the mounted media directory and select one or more folders to scan.</p><details class="language-picker"><summary>Choose target languages</summary><label for="language-search">Filter available languages</label><input id="language-search" type="search" placeholder="Search languages by name or code" autocomplete="off"><div id="language-options" class="language-options" aria-label="Available target languages"></div></details><p id="selected-languages" aria-live="polite">Selected: English</p><button id="browse-folders" class="secondary">Browse folders</button><button id="clear-folder-selection" class="secondary" type="button">Clear selection</button><div id="selected-folders" class="selected-folders"><span class="folder-chip">/media (default)</span></div><div id="folder-browser" class="folder-browser" hidden><div class="actions"><button id="folder-up" class="secondary" type="button">Up one level</button><button id="folder-select-current" class="secondary" type="button">Select this folder</button><button id="folder-close" class="secondary" type="button">Close</button></div><p id="folder-current" class="folder-path">/media</p><ul id="folder-list" class="folder-list"></ul><p id="folder-error" class="warning" aria-live="polite"></p></div><button id="scan">Start scan</button><button id="cancel-scan" class="secondary" type="button" hidden disabled>Cancel scan</button><p id="status">Ready.</p><div id="scan-results"></div><div id="job-progress" class="candidate" aria-live="polite">No active job.</div></section>
-<section class="panel"><div class="actions" style="justify-content:space-between;align-items:center"><div><h2>Subtitle candidate review</h2><p>Review candidates for the latest scan.</p></div><button id="clear-saved-data" class="secondary" type="button">Clear saved data</button></div><div class="batch-toolbar">
+<section class="panel"><div class="actions" style="justify-content:space-between;align-items:center"><div><h2>Subtitle candidate review</h2><p>Review candidates for the latest scan.</p><label class="language-option"><input id="show-all-scanned-files" type="checkbox" style="width:auto;margin:0"> Show all scanned files (including non-eligible files)</label></div><button id="clear-saved-data" class="secondary" type="button">Clear saved data</button></div><div class="batch-toolbar">
 <button id="select-all-candidates" class="secondary" type="button" disabled>Select all eligible</button>
 <button id="clear-candidate-selection" class="secondary" type="button" disabled>Clear selection</button>
 <button id="batch-run" disabled>Approve & inject selected</button>
@@ -285,7 +294,25 @@ function selectedSubtitleIndices(candidateId){
     const card=[...candidateList.querySelectorAll(".candidate")].find(item=>item.dataset.candidateId===String(candidateId));
     return card?[...card.querySelectorAll(".existing-subtitle-track input:checked")].map(input=>Number(input.value)):[];
 }
-async function loadCandidates(){const r=await fetch("/api/candidates");const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);renderCandidates(d.candidates);}
+function selectedMediaSubtitleIndices(path){
+    const card=[...candidateList.querySelectorAll(".candidate")].find(item=>item.dataset.mediaPath===path);
+    return card?[...card.querySelectorAll(".existing-subtitle-track input:checked")].map(input=>Number(input.value)):[];
+}
+async function editScannedMedia(path,button){
+    const indices=selectedMediaSubtitleIndices(path);
+    const reprocess=indices.length===0&&confirm("No subtitle tracks will remain. Re-mux this file with no subtitles, then re-process it and retry subtitle matching?");
+    if(indices.length===0&&!reprocess)return;
+    if(!confirm("Apply only the selected existing subtitle-track changes? No downloaded subtitle will be injected."))return;
+    button.disabled=true;
+    try{
+        const response=await fetch("/api/media-files/edit",{method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({confirm:true,media_relative_path:path,keep_subtitle_indices:indices,
+                reprocess_if_empty:reprocess,target_languages:[...selectedTargetLanguages]})});
+        const result=await response.json();if(!response.ok)throw Error(result.detail||response.statusText);
+        alert(result.message||"Existing subtitle tracks updated.");await loadCandidates();
+    }catch(error){alert("Could not edit existing subtitle tracks: "+error.message);button.disabled=false;}
+}
+async function loadCandidates(){const all=document.querySelector("#show-all-scanned-files")?.checked;const r=await fetch("/api/candidates"+(all?"?all=true":""));const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);renderCandidates(d.candidates);}
 const selectedCandidateIds = new Set();
 
 function eligibleForBatch(candidate) {
@@ -334,6 +361,16 @@ function renderCandidates(items) {
     }
 
     for (const c of items) {
+        if (c.is_non_candidate) {
+            const card=el("article",undefined,"candidate");card.dataset.mediaPath=c.media_relative_path;
+            const heading=el("div",undefined,"candidate-heading"),title=el("div",undefined,"candidate-title");
+            title.append(el("h3",c.file_name),el("p",c.media_relative_path,"candidate-media-path"));heading.append(title);card.append(heading);
+            card.append(el("p","Scanned file · not eligible for subtitle injection"));
+            line(card,"Existing audio tracks",streams(c.inspection?.audio_streams));renderExistingSubtitleControls(card,c);
+            if(c.is_stale)card.append(el("p","This file changed after scanning. Rescan before editing.","warning"));
+            else{const edit=el("button","Apply existing-track edits");edit.addEventListener("click",()=>editScannedMedia(c.media_relative_path,edit));card.append(edit);}
+            candidateList.append(card);continue;
+        }
         const card = el("article", undefined, "candidate");
         card.dataset.candidateId=String(c.id);
         const heading = el("div", undefined, "candidate-heading");
@@ -415,6 +452,9 @@ function renderCandidates(items) {
     updateBatchControls();
 }
 
+document.querySelector("#show-all-scanned-files").addEventListener("change", () => loadCandidates().catch(error => {
+    candidateList.textContent = "Could not load scanned files: " + error.message;
+}));
 document.querySelector("#select-all-candidates").addEventListener("click", selectAllCandidates);
 document.querySelector("#clear-candidate-selection").addEventListener("click", clearCandidateSelection);
 
@@ -729,7 +769,7 @@ def clear_data():
 
 
 @app.get("/api/candidates")
-def candidates():
+def candidates(all: bool = False):
     rows = list_candidates()
     media_root = Path(settings.media_root).resolve()
     for row in rows:
@@ -742,7 +782,7 @@ def candidates():
                 current.st_size != row["media_size"]
                 or current.st_mtime != row["media_modified_at"]
             )
-    rows = [row for row in rows if candidate_should_be_visible(row)]
+    visible_rows = [row for row in rows if candidate_should_be_visible(row)]
     fields = (
         "id", "media_relative_path", "file_name", "language", "format",
         "content_language", "content_language_confidence", "content_status",
@@ -751,8 +791,107 @@ def candidates():
         "match_reasons", "status", "review_decision", "review_updated_at",
         "last_error", "is_stale", "inspection", "patch_status", "patch_started_at", "patch_completed_at",
     )
-    return {"candidates": [{key: row.get(key) for key in fields} for row in rows], "count": len(rows)}
+    output = [{key: row.get(key) for key in fields} for row in visible_rows]
+    if all:
+        visible_paths = {row["media_relative_path"] for row in output}
+        root = Path(settings.media_root).resolve()
+        for media in list_media_files():
+            path = media["relative_path"]
+            if path in visible_paths:
+                continue
+            media_path = root / path
+            try:
+                safe_path = media_path.resolve(strict=True)
+                stale = not safe_path.is_relative_to(root) or not safe_path.is_file()
+                if not stale:
+                    stat_result = safe_path.stat()
+                    stale = stat_result.st_size != media["size"] or stat_result.st_mtime != media["modified_at"]
+            except (OSError, RuntimeError):
+                stale = True
+            output.append({"is_non_candidate": True, "media_relative_path": path,
+                "file_name": Path(path).name, "inspection": media["inspection"],
+                "is_stale": stale, "status": "scanned"})
+    return {"candidates": output, "count": len(output)}
 
+
+
+@app.post("/api/media-files/edit")
+def edit_scanned_media(request: MediaEditRequest):
+    if request.confirm is not True:
+        raise HTTPException(status_code=400, detail="Explicit confirmation is required for media modification.")
+    relative = Path(request.media_relative_path)
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        raise HTTPException(status_code=400, detail="Unsafe media path.")
+    media = next((item for item in list_media_files() if item["relative_path"] == relative.as_posix()), None)
+    if media is None:
+        raise HTTPException(status_code=404, detail="This file is not in the scanned media inventory.")
+    media_root = Path(settings.media_root).resolve(strict=True)
+    source = media_root
+    try:
+        for part in relative.parts:
+            source = source / part
+            if source.is_symlink():
+                raise HTTPException(status_code=400, detail="Symlink components are not allowed in media paths.")
+        source = source.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=404, detail="The scanned media file is unavailable.")
+    if not source.is_relative_to(media_root) or not source.is_file() or source.suffix.lower() != ".mkv":
+        raise HTTPException(status_code=415, detail="Only scanned MKV media files can be edited.")
+    current = source.stat()
+    if current.st_size != media["size"] or current.st_mtime != media["modified_at"]:
+        raise HTTPException(status_code=409, detail="The media file changed after scanning. Rescan before editing.")
+    available = {int(track["index"]) for track in (media.get("inspection") or {}).get("subtitle_streams", [])
+                 if isinstance(track.get("index"), int) and not isinstance(track.get("index"), bool)}
+    indices = request.keep_subtitle_indices
+    if any(not isinstance(index, int) or isinstance(index, bool) for index in indices):
+        raise HTTPException(status_code=400, detail="Subtitle stream selections must be integer stream indices.")
+    if len(indices) != len(set(indices)) or not set(indices).issubset(available):
+        raise HTTPException(status_code=409, detail="Selected subtitle tracks do not match the scanned media. Rescan before editing.")
+    try:
+        languages = normalize_languages(request.target_languages)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job = create_job("inject", total=1, metadata={"existing_tracks_only": True, "media_relative_path": relative.as_posix()})
+    start_job(job["id"])
+    pattern = f".{source.name}.recovery-*.bak"
+    before_backups = set(source.parent.glob(pattern))
+    try:
+        result = patch_mkv(source, None, approved=True, test_mode=settings.test_mode,
+            expected_size=media["size"], expected_mtime=media["modified_at"], keep_subtitle_indices=indices)
+        record_media_patch(relative.as_posix(), "patched", result, result.get("backup"))
+        details = inspect_media(source)
+        stat_result = source.stat()
+        record_scan(relative.as_posix(), stat_result.st_size, stat_result.st_mtime, details)
+        reset_candidate_reviews_for_media(relative.as_posix())
+        reprocess_result = None
+        if not indices and request.reprocess_if_empty:
+            provider = load_provider_settings()
+            if provider["api_key"]:
+                try:
+                    client = OpenSubtitlesClient(provider["api_key"], provider["username"], provider["password"])
+                    reprocess_result = stage_candidates(client, source, media_root, stat_result,
+                        details.get("metadata") or {}, languages)
+                except OpenSubtitlesError as match_error:
+                    reprocess_result = {"status": "provider_error", "error": str(match_error)}
+            else:
+                reprocess_result = {"status": "not_configured", "found": 0, "staged": 0}
+        record_job_item(job["id"], media_path=relative.as_posix(), status="completed",
+            phase="verified", patch_status="patched", details=result)
+        update_job_progress(job["id"], phase="completed", completed=1, succeeded=1)
+        finish_job(job["id"], "completed")
+        return {"job_id": job["id"], "status": "completed", "result": result, "reprocess": reprocess_result,
+            "message": "Existing subtitle tracks updated; no new subtitle was injected."
+                + (" Matching reprocessed: " + str((reprocess_result or {}).get("status", "completed")) + "." if not indices and request.reprocess_if_empty else "")}
+    except Exception as exc:
+        backups = set(source.parent.glob(pattern)) - before_backups
+        backup = str(max(backups, key=lambda path: path.stat().st_mtime_ns)) if backups else None
+        error = f"{type(exc).__name__}: {str(exc)[:400]}"
+        record_media_patch(relative.as_posix(), "failed", {"error": error, "recovery_path": backup}, backup)
+        record_job_item(job["id"], media_path=relative.as_posix(), status="failed",
+            phase="existing_track_edit", patch_status="failed", error=error, details={"recovery_path": backup})
+        update_job_progress(job["id"], phase="failed", completed=1, failed=1)
+        finish_job(job["id"], "failed", error)
+        raise HTTPException(status_code=500, detail="Existing subtitle-track edit failed: " + error) from exc
 
 def get_staged_candidate(candidate_id: int) -> tuple[dict, Path]:
     row = next((item for item in list_candidates() if item["id"] == candidate_id), None)
