@@ -2,6 +2,12 @@
 
 All notable changes to Subtitle Manager are documented here.
 
+## [1.0.1] - 2026-11-09
+
+### Changed
+- Add the MIT License to clarify the project's reuse, modification, and redistribution terms.
+- Document the project's license in the README.
+
 ## [1.0.0] - 2026-11-09
 
 First stable release.
