@@ -40,7 +40,7 @@ class PendingApprovalQueueTests(unittest.TestCase):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
         self.assertIn("Approve this candidate and inject it", source)
         self.assertIn('"/api/candidates/"+id+"/inject"', source)
-        self.assertIn('body:JSON.stringify({confirm:true})', source)
+        self.assertIn('body:JSON.stringify({confirm:true,keep_subtitle_indices:selectedSubtitleIndices(id)})', source)
 
 
 if __name__ == "__main__":
