@@ -197,9 +197,13 @@ def save_candidate(media_relative_path: str, media_size: int, media_modified_at:
                 media_size=excluded.media_size,
                 media_modified_at=excluded.media_modified_at,
                 subtitle_id=excluded.subtitle_id,
-                file_name=excluded.file_name,
+                file_name=CASE
+                    WHEN subtitle_candidates.status='staged'
+                    THEN subtitle_candidates.file_name ELSE excluded.file_name END,
                 language=excluded.language,
-                format=excluded.format,
+                format=CASE
+                    WHEN subtitle_candidates.status='staged'
+                    THEN subtitle_candidates.format ELSE excluded.format END,
                 release=excluded.release,
                 moviehash_match=excluded.moviehash_match,
                 download_count=excluded.download_count,

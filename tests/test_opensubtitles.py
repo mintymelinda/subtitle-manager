@@ -133,16 +133,18 @@ class OpenSubtitlesTests(unittest.TestCase):
 
     def test_search_preserves_extensionless_provider_files_for_all_13_episodes(self):
         """Regression for the Bob's Burgers S1 log: provider names end in .eng."""
+        next_file_id = 100
+
         def opener(request, timeout=30):
+            nonlocal next_file_id
+            next_file_id += 1
             payload = {
                 "data": [{
                     "attributes": {
                         "language": "en",
                         "release": "Bobs Burgers",
                         "files": [{
-                            "file_id": int(urllib.parse.parse_qs(
-                                urllib.parse.urlparse(request.full_url).query
-                            ).get("episode_number", ["1"])[0]) + 100,
+                            "file_id": next_file_id,
                             "file_name": "Bobs Burgers - S01E01 - Episode.eng",
                         }],
                     }
