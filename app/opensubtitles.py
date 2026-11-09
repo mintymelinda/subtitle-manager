@@ -50,6 +50,19 @@ def filename_query(path: Path) -> str:
     return " ".join(re.sub(r"[._]+", " ", path.stem).split()).lower()
 
 
+def episode_numbers(path: Path) -> tuple[int, int] | None:
+    """Extract season and episode numbers from common TV release filenames."""
+    patterns = (
+        r"(?i)(?:^|[^a-z0-9])s(?P<season>\d{1,2})[ ._-]*e(?P<episode>\d{1,3})(?:[^a-z0-9]|$)",
+        r"(?i)(?:^|[^0-9])(?P<season>\d{1,2})x(?P<episode>\d{1,3})(?:[^0-9]|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, path.stem)
+        if match:
+            return int(match.group("season")), int(match.group("episode"))
+    return None
+
+
 def _tokens(value: str) -> set[str]:
     return {token for token in re.findall(r"[a-z0-9]+", value.lower()) if len(token) > 1}
 
@@ -228,9 +241,10 @@ class OpenSubtitlesClient:
 
     def search(self, media_path: Path, metadata: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         metadata = metadata or {}
-        title = str(metadata.get("title") or "").strip()
-        year = str(metadata.get("year") or "").strip()
-        query = " ".join(part for part in (title, year) if part) or filename_query(media_path)
+        # OpenSubtitles recommends searching by the actual filename alongside
+        # the movie hash. Container titles often contain only a TV series name,
+        # which drops the season/episode/release details and can return no match.
+        query = filename_query(media_path)
         params: dict[str, Any] = {"languages": "en", "query": query}
         moviehash = compute_moviehash(media_path)
         if moviehash:
@@ -239,7 +253,12 @@ class OpenSubtitlesClient:
         if imdb_id:
             imdb_id = re.sub(r"^tt", "", imdb_id, flags=re.IGNORECASE).lstrip("0")
             if imdb_id.isdigit():
-                params["imdb_id"] = imdb_id
+                episode = episode_numbers(media_path)
+                if episode:
+                    params["parent_imdb_id"] = imdb_id
+                    params["season_number"], params["episode_number"] = episode
+                else:
+                    params["imdb_id"] = imdb_id
         result = self._json_request("/subtitles", params=params)
         candidates: list[dict[str, Any]] = []
         for item in result.get("data", []):

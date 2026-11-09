@@ -568,9 +568,10 @@ def finish_job(job_id: int, status: str, error: str | None = None):
         raise ValueError("Invalid terminal job state.")
     with connect() as db:
         db.execute(
-            """UPDATE jobs SET status=?, error=?, finished_at=CURRENT_TIMESTAMP,
-               updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('queued','running')""",
-            (status, (error or "")[:500] or None, job_id),
+            """UPDATE jobs SET status=?, phase=?, current_file=NULL, error=?,
+               finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+               WHERE id=? AND status IN ('queued','running')""",
+            (status, status, (error or "")[:500] or None, job_id),
         )
 
 
@@ -614,7 +615,8 @@ def recover_interrupted_jobs() -> int:
         for row in rows:
             db.execute("UPDATE job_items SET status='interrupted', phase='recovery', error='Application restarted before this file finished.', completed_at=CURRENT_TIMESTAMP WHERE job_id=? AND status='running'", (row["id"],))
             db.execute(
-                """UPDATE jobs SET status='interrupted',
+                """UPDATE jobs SET status='interrupted', phase='interrupted',
+                   current_file=NULL,
                    error='Application restarted before this job reached a terminal state.',
                    finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
                 (row["id"],),

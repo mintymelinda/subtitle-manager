@@ -43,6 +43,33 @@ class OpenSubtitlesTests(unittest.TestCase):
             "the matrix 1999 1080p",
         )
 
+    def test_search_uses_filename_query_instead_of_container_series_title(self):
+        captured = []
+
+        def opener(request, timeout=30):
+            captured.append(request)
+            return FakeResponse(b'{"data": []}')
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Bob's.Burgers.S01E12.Lobsterfest.WEBDL-1080p.mkv"
+            path.write_bytes(b"small test file")
+            client = OpenSubtitlesClient("test-secret", opener=opener, sleeper=lambda _s: None)
+            client.search(path, {
+                "title": "Bob's Burgers",
+                "year": "2011",
+                "imdb_id": "tt1234567",
+            })
+
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(captured[0].full_url).query)
+        self.assertEqual(
+            params["query"][0],
+            "bob's burgers s01e12 lobsterfest webdl-1080p",
+        )
+        self.assertEqual(params["parent_imdb_id"], ["1234567"])
+        self.assertEqual(params["season_number"], ["1"])
+        self.assertEqual(params["episode_number"], ["12"])
+        self.assertNotIn("imdb_id", params)
+
     def test_exact_hash_match_ranks_above_release_name_match(self):
         exact, reasons = rank_candidate(
             {"moviehash_match": True, "download_count": 0}, "The Matrix 1999"

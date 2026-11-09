@@ -35,7 +35,8 @@ class JobHistoryTests(unittest.TestCase):
         saved = get_job(job["id"])
         self.assertEqual(saved["status"], "completed")
         self.assertEqual(saved["completed"], 1)
-        self.assertEqual(saved["current_file"], "Film/movie.mkv")
+        self.assertEqual(saved["phase"], "completed")
+        self.assertIsNone(saved["current_file"])
         self.assertEqual(saved["items"][0]["details"], {"staged": 2})
         self.assertEqual(list_jobs()[0]["id"], job["id"])
 
@@ -48,6 +49,8 @@ class JobHistoryTests(unittest.TestCase):
         self.assertEqual(get_job(queued["id"])["status"], "interrupted")
         self.assertEqual(get_job(running["id"])["status"], "interrupted")
         self.assertEqual(get_job(running["id"])["items"][0]["status"], "interrupted")
+        self.assertEqual(get_job(running["id"])["phase"], "interrupted")
+        self.assertIsNone(get_job(running["id"])["current_file"])
         self.assertEqual(recover_interrupted_jobs(), 0)
 
     def test_failed_job_retains_actionable_error(self):
