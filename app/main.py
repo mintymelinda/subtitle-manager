@@ -386,10 +386,20 @@ document.querySelector("#clear-candidate-selection").addEventListener("click", c
 async function waitForBatchInjection(jobId, candidateId, index, total) {
     const panel = document.querySelector("#job-progress");
     while (true) {
-        const response = await fetch("/api/jobs/" + jobId, {
-            headers: {"Accept": "application/json"}
-        });
-        const job = await readJsonResponse(response, "Batch injection status");
+        let job;
+        try {
+            const response = await fetch("/api/jobs/" + jobId, {
+                headers: {"Accept": "application/json"}
+            });
+            job = await readJsonResponse(response, "Batch injection status");
+        } catch (error) {
+            panel.replaceChildren(el("strong", "Batch injection · " + index + "/" + total
+                + " · Candidate #" + candidateId + " · Job #" + jobId));
+            panel.append(el("p", "Injection is still being tracked. Status request failed: "
+                + error.message + ". Retrying without starting another injection…", "warning"));
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            continue;
+        }
         panel.replaceChildren();
         panel.append(el("strong", "Batch injection · " + index + "/" + total
             + " · Candidate #" + candidateId + " · Job #" + job.id + " · " + job.status));
