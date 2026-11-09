@@ -76,6 +76,42 @@ class TransactionalPatcherTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "unexpected existing subtitle tracks"):
             _validate_streams(before, after, self.source, [2])
 
+
+    def test_existing_track_only_validation_accepts_exactly_selected_tracks(self):
+        before = {"format": {"format_name": "matroska"}, "streams": [
+            stream("video", "h264"), stream("audio", "aac"),
+            {**stream("subtitle", "subrip", "fra"), "index": 2},
+            {**stream("subtitle", "ass", "jpn"), "index": 3},
+        ]}
+        after = {"format": {"format_name": "matroska"}, "streams": [
+            stream("video", "h264"), stream("audio", "aac"),
+            {**stream("subtitle", "ass", "jpn"), "index": 2},
+        ]}
+        _validate_streams(before, after, self.source, [3], subtitle_added=False)
+
+    def test_existing_track_only_validation_rejects_any_unrequested_new_track(self):
+        before = {"format": {"format_name": "matroska"}, "streams": [
+            stream("video", "h264"), stream("audio", "aac"),
+            {**stream("subtitle", "subrip", "fra"), "index": 2},
+        ]}
+        after = {"format": {"format_name": "matroska"}, "streams": [
+            stream("video", "h264"), stream("audio", "aac"),
+            {**stream("subtitle", "subrip", "fra"), "index": 2},
+            {**stream("subtitle", "subrip", "eng"), "index": 3},
+        ]}
+        with self.assertRaisesRegex(RuntimeError, "track count"):
+            _validate_streams(before, after, self.source, [2], subtitle_added=False)
+
+    def test_existing_track_only_validation_can_remove_every_subtitle(self):
+        before = {"format": {"format_name": "matroska"}, "streams": [
+            stream("video", "h264"), stream("audio", "aac"),
+            {**stream("subtitle", "subrip", "fra"), "index": 2},
+        ]}
+        after = {"format": {"format_name": "matroska"}, "streams": [
+            stream("video", "h264"), stream("audio", "aac"),
+        ]}
+        _validate_streams(before, after, self.source, [], subtitle_added=False)
+
     def test_test_mode_patches_one_file_and_retains_recovery_copy(self):
         result = self.run_patch([self.before, self.valid_after, self.valid_after])
         self.assertEqual(result["status"], "patched")
