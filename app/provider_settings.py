@@ -22,6 +22,7 @@ def load_provider_settings() -> dict[str, Any]:
                     "username": str(value.get("username") or ""),
                     "password": str(value.get("password") or ""),
                     "max_candidates_per_file": max(1, min(5, int(value.get("max_candidates_per_file", 2)))),
+                    "log_level": str(value.get("log_level") or "INFO").upper(),
                 }
         except (OSError, ValueError, TypeError):
             raise RuntimeError("Saved OpenSubtitles settings could not be read. Check the persistent settings file.")
@@ -31,11 +32,13 @@ def load_provider_settings() -> dict[str, Any]:
         "username": settings.open_subtitles_username.strip(),
         "password": settings.open_subtitles_password,
         "max_candidates_per_file": max(1, min(5, int(settings.open_subtitles_max_candidates_per_file))),
+        "log_level": "INFO",
     }
 
 
 def save_provider_settings(*, api_key: str, username: str, password: str,
                            max_candidates_per_file: int,
+                           log_level: str = "INFO",
                            clear_account_credentials: bool = False) -> dict[str, Any]:
     current = load_provider_settings()
     key = api_key.strip() or current["api_key"]
@@ -51,6 +54,9 @@ def save_provider_settings(*, api_key: str, username: str, password: str,
     limit = int(max_candidates_per_file)
     if not 1 <= limit <= 5:
         raise ValueError("Candidate download limit must be between 1 and 5.")
+    level = str(log_level or "INFO").upper()
+    if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        raise ValueError("Logging level must be DEBUG, INFO, WARNING, ERROR, or CRITICAL.")
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({
@@ -58,6 +64,7 @@ def save_provider_settings(*, api_key: str, username: str, password: str,
         "username": username,
         "password": password,
         "max_candidates_per_file": limit,
+        "log_level": level,
     }, separators=(",", ":")) + "\n"
     fd, temporary = tempfile.mkstemp(prefix=".opensubtitles-settings-", dir=str(path.parent))
     try:
@@ -83,6 +90,7 @@ def public_provider_settings() -> dict[str, Any]:
         "configured": bool(value["api_key"]),
         "has_account_credentials": bool(value["username"] and value["password"]),
         "max_candidates_per_file": value["max_candidates_per_file"],
+        "log_level": value["log_level"],
         "settings_storage": "persistent_volume",
     }
 
