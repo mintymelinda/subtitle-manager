@@ -25,7 +25,7 @@ class JobStatusDashboardTests(unittest.TestCase):
         self.assertIn("may still be running", source)
 
 
-    def test_candidate_visibility_keeps_only_current_actionable_or_recovery_items(self):
+    def test_candidate_visibility_shows_only_fresh_pending_approvals(self):
         base = {
             "status": "staged",
             "is_stale": False,
@@ -33,12 +33,21 @@ class JobStatusDashboardTests(unittest.TestCase):
             "patch_status": "not_started",
         }
         self.assertTrue(candidate_should_be_visible(base))
-        self.assertFalse(candidate_should_be_visible({**base, "is_stale": True}))
-        self.assertFalse(candidate_should_be_visible({**base, "review_decision": "rejected"}))
-        self.assertFalse(candidate_should_be_visible({**base, "patch_status": "patched"}))
-        self.assertTrue(candidate_should_be_visible({**base, "patch_status": "interrupted", "is_stale": True}))
-        self.assertTrue(candidate_should_be_visible({**base, "patch_status": "running"}))
-        self.assertFalse(candidate_should_be_visible({**base, "status": "download_failed"}))
+        self.assertTrue(candidate_should_be_visible({**base, "patch_status": None}))
+        self.assertTrue(candidate_should_be_visible({**base, "patch_status": ""}))
+        for changes in (
+            {"is_stale": True},
+            {"review_decision": "approved"},
+            {"review_decision": "rejected"},
+            {"patch_status": "running"},
+            {"patch_status": "interrupted"},
+            {"patch_status": "patched"},
+            {"patch_status": "failed"},
+            {"status": "discovered"},
+            {"status": "download_failed"},
+        ):
+            with self.subTest(changes=changes):
+                self.assertFalse(candidate_should_be_visible({**base, **changes}))
 
     def test_dashboard_removes_recent_activity_history_but_keeps_active_progress(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
@@ -48,11 +57,13 @@ class JobStatusDashboardTests(unittest.TestCase):
         self.assertIn('id="job-progress"', source)
         self.assertIn('readJsonResponse(r,"Job status request")', source)
 
-    def test_candidate_queue_filters_stale_rejected_and_completed_results(self):
+    def test_candidate_queue_uses_centralized_pending_visibility_filter(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
         self.assertIn("def candidate_should_be_visible(row: dict) -> bool:", source)
-        self.assertIn('row.get("review_decision") != "rejected"', source)
-        self.assertIn('row.get("patch_status") != "patched"', source)
+        self.assertIn('row.get("review_decision") == "pending"', source)
+        self.assertIn('row.get("status") == "staged"', source)
+        self.assertIn('and not row.get("is_stale")', source)
+        self.assertIn('row.get("patch_status") in {None, "", "not_started"}', source)
         self.assertIn('rows = [row for row in rows if candidate_should_be_visible(row)]', source)
 
 if __name__ == "__main__":
