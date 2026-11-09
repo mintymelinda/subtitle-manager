@@ -53,8 +53,8 @@ def filename_query(path: Path) -> str:
 def episode_numbers(path: Path) -> tuple[int, int] | None:
     """Extract season and episode numbers from common TV release filenames."""
     patterns = (
-        r"(?i)(?:^|[^a-z0-9])s(?P<season>\\d{1,2})[ ._-]*e(?P<episode>\\d{1,3})(?:[^a-z0-9]|$)",
-        r"(?i)(?:^|[^0-9])(?P<season>\\d{1,2})x(?P<episode>\\d{1,3})(?:[^0-9]|$)",
+        r"(?i)(?:^|[^a-z0-9])s(?P<season>\d{1,2})[ ._-]*e(?P<episode>\d{1,3})(?:[^a-z0-9]|$)",
+        r"(?i)(?:^|[^0-9])(?P<season>\d{1,2})x(?P<episode>\d{1,3})(?:[^0-9]|$)",
     )
     for pattern in patterns:
         match = re.search(pattern, path.stem)
