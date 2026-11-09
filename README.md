@@ -44,6 +44,14 @@ A self-hosted web application for finding missing English subtitles and adding a
 
 - Support for non-MKV media containers; the transactional patcher currently supports MKV only.
 
+## Release 1.0.0
+
+Subtitle Manager 1.0.0 is the first stable release. The supported media-modification workflow is limited to MKV files; other video containers are not scanned for subtitle injection.
+
+For a new installation, follow [Quick start](#quick-start). Keep the persistent `./data` directory backed up because it contains the SQLite database and saved OpenSubtitles settings.
+
+The dashboard's **Clear saved data & caches** action is destructive: it clears saved scan/job/review history and removes regular `.bak` files recursively under the mounted `/media` directory. It does not remove media files or follow symbolic links. Do not use it if you need to retain recovery backups for investigation.
+
 ## Jobs, progress, and logs
 
 Scan and approved-injection requests return a `job_id` immediately and continue in the background. Poll `GET /api/jobs/{job_id}` for state, phase, current file, counters, and per-file results; `GET /api/jobs` lists recent jobs. The dashboard polls active jobs and displays recent history. Candidate approvals and rejections are also written to the job history. Job records and per-file outcomes are stored in SQLite and remain available after restart. Jobs left queued or running during a restart are marked `interrupted`; they are never reported as successful or automatically replayed. Interrupted injections still require manual media/recovery-copy inspection.
