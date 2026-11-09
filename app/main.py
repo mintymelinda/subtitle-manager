@@ -126,7 +126,9 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
             else:
                 try:
                     file_name, payload, remaining = client.download(candidate["file_id"])
-                    assessment = assess_subtitle_payload(file_name, payload)
+                    assessment = assess_subtitle_payload(
+                        file_name, payload, expected_language=candidate["language"]
+                    )
                     detected_language = assessment.get("content_language")
                     if detected_language and not language_matches(detected_language, candidate["language"]):
                         mark_candidate_error(

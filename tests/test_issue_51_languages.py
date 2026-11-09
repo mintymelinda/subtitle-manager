@@ -1,7 +1,7 @@
 import unittest
 
 from app.languages import LANGUAGE_CODES, normalize_languages, language_matches
-from app.opensubtitles import OpenSubtitlesClient
+from app.opensubtitles import OpenSubtitlesClient, assess_subtitle_payload
 from app.patcher import _validate_streams
 from pathlib import Path
 from unittest.mock import patch
@@ -22,6 +22,18 @@ class TargetLanguageTests(unittest.TestCase):
         self.assertTrue(language_matches("fra", "fr"))
         self.assertTrue(language_matches("zh-CN", "zh"))
         self.assertFalse(language_matches("de", "fr"))
+
+    def test_content_assessment_uses_the_selected_language(self):
+        french = ("Ceci est un texte français suffisamment long pour identifier "
+                  "la langue du sous-titre avec une certaine confiance. " * 5).encode()
+        self.assertEqual(
+            assess_subtitle_payload("candidate.srt", french, expected_language="fr")["content_status"],
+            "matched",
+        )
+        self.assertEqual(
+            assess_subtitle_payload("candidate.srt", french, expected_language="de")["content_status"],
+            "mismatch",
+        )
 
     def test_patcher_verifies_the_selected_non_english_language(self):
         before = {"format": {"format_name": "matroska"}, "streams": []}

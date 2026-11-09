@@ -9,7 +9,7 @@ import json
 import re
 
 from app.observability import logger
-from app.languages import normalize_languages, canonical_language
+from app.languages import normalize_languages, canonical_language, language_matches
 
 from langdetect import DetectorFactory, detect_langs
 from langdetect.lang_detect_exception import LangDetectException
@@ -100,7 +100,8 @@ def rank_candidate(attributes: dict[str, Any], media_name: str) -> tuple[int, li
     return max(0, min(110, score)), reasons
 
 
-def assess_subtitle_payload(file_name: str, payload: bytes) -> dict[str, Any]:
+def assess_subtitle_payload(file_name: str, payload: bytes,
+                            expected_language: str | None = None) -> dict[str, Any]:
     """Check readable subtitle text; bitmap subtitles remain explicitly unknown."""
     extension = Path(file_name).suffix.lower()
     if extension == ".sup":
@@ -126,7 +127,12 @@ def assess_subtitle_payload(file_name: str, payload: bytes) -> dict[str, Any]:
         prediction = detect_langs(sample)[0]
         language = prediction.lang
         confidence = float(prediction.prob)
-        status = "unknown" if confidence < 0.80 else ("english" if language == "en" else "other")
+        if confidence < 0.80:
+            status = "unknown"
+        elif expected_language:
+            status = "matched" if language_matches(language, expected_language) else "mismatch"
+        else:
+            status = "english" if language == "en" else "other"
         return {
             "content_status": status,
             "content_language": language,
