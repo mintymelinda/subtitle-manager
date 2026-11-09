@@ -38,15 +38,16 @@ A self-hosted web application for finding missing English subtitles and adding a
 - Structured JSON application logs with UTC timestamps, event/job/candidate context, exception details, and recursive redaction of API keys, passwords, tokens, authorization headers, and cookies.
 - Candidate review decisions are stored in SQLite, tied to the exact media path and scanned file size/mtime. Only one candidate can be approved for a media file at a time; changed media invalidates the previous decision.
 - GitHub Actions checks for Python compilation, unit tests, real FFmpeg/MKVToolNix integration tests, and Docker image build.
+- Release workflow publishes versioned multi-platform Docker images to GitHub Container Registry (GHCR).
 - Injection operations are serialized by canonical media path across application workers, so distinct approved candidates cannot concurrently replace the same MKV.
 
 ## Not implemented yet
 
 - Support for non-MKV media containers; the transactional patcher currently supports MKV only.
 
-## Release 1.0.0
+## Release 1.0.1
 
-Subtitle Manager 1.0.0 is the first stable release. The supported media-modification workflow is limited to MKV files; other video containers are not scanned for subtitle injection.
+Subtitle Manager 1.0.1 includes the MIT license and automated GHCR image publishing. The supported media-modification workflow is limited to MKV files; other video containers are not scanned for subtitle injection.
 
 For a new installation, follow [Quick start](#quick-start). Keep the persistent `./data` directory backed up because it contains the SQLite database and saved OpenSubtitles settings.
 
@@ -68,6 +69,7 @@ Application logs are emitted as one JSON object per line to standard output, sui
 Provider settings are written atomically to `/app/data/opensubtitles-settings.json` with owner-only file permissions. The Compose `./data:/app/data` volume keeps them across container recreation and image updates. Secrets are never returned by the settings or `/api/config` endpoints and are excluded from application log messages. Leave credential fields blank to retain saved values; use the explicit checkbox to clear optional account credentials. OpenSubtitles quotas and rate limits are controlled by the provider and may change.
 
 Existing installations that still have OpenSubtitles values in `.env` are supported as a one-time fallback until settings are saved through the dashboard.
+
 ## Requirements
 
 - Docker Engine and Docker Compose.
@@ -87,6 +89,26 @@ Existing installations that still have OpenSubtitles values in `.env` are suppor
 4. Open http://localhost:8080, choose **Browse folders**, navigate the mounted directory, and select one or more folders to scan. If none are selected, the scan defaults to `/media`. The browser is restricted to the mounted media volume and does not follow symbolic links.
 
 Live mode is enabled by default. After reviewing and approving a candidate, use **Inject approved subtitle** to patch that one MKV. In live mode, the recovery copy is deleted only after successful post-replacement verification. To opt into test mode, set `TEST_MODE=true`; test mode still performs the actual replacement and retains the original recovery copy beside the media file. The scanner deliberately discovers only MKV containers because the current transactional patcher supports MKV only. Other video files are skipped entirely and will not receive subtitle candidates.
+
+## Running the published GHCR image
+
+Release tags publish a multi-platform image to GitHub Container Registry. The package is linked to this repository by the Dockerfile's OCI source label. The first published package may be private by default; set its visibility to **Public** in the repository owner's package settings if anonymous pulls are desired.
+
+Use the registry Compose file for a deployment that pulls the published image instead of building it locally:
+
+```sh
+cp .env.example .env
+docker compose -f docker-compose.ghcr.yml pull
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
+By default this uses the `latest` tag. To pin a release, set `IMAGE_TAG=1.0.1` in `.env` (or export it in the shell) before running Compose. For a private package, authenticate with a GitHub personal access token (classic) that has `read:packages` scope before pulling:
+
+```sh
+echo "$CR_PAT" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+```
+
+Keep the `./data` directory and mounted media volume unchanged when switching from a locally built image to the registry image.
 
 ## Development
 
