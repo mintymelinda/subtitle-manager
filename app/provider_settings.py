@@ -45,8 +45,8 @@ def save_provider_settings(*, api_key: str, username: str, password: str,
                            clear_account_credentials: bool = False) -> dict[str, Any]:
     current = load_provider_settings()
     key = api_key.strip() or current["api_key"]
-    if not key:
-        raise ValueError("An OpenSubtitles API key is required.")
+    if not key and (username.strip() or password):
+        raise ValueError("An OpenSubtitles API key is required when account credentials are provided.")
     if clear_account_credentials:
         username, password = "", ""
     else:
