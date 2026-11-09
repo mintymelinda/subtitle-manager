@@ -45,8 +45,6 @@ def save_provider_settings(*, api_key: str, username: str, password: str,
                            clear_account_credentials: bool = False) -> dict[str, Any]:
     current = load_provider_settings()
     key = api_key.strip() or current["api_key"]
-    if not key and (username.strip() or password):
-        raise ValueError("An OpenSubtitles API key is required when account credentials are provided.")
     if clear_account_credentials:
         username, password = "", ""
     else:
@@ -54,6 +52,8 @@ def save_provider_settings(*, api_key: str, username: str, password: str,
         password = password or current["password"]
     if bool(username) != bool(password):
         raise ValueError("Enter both the OpenSubtitles username and password, or leave both blank.")
+    if not key and (username or password):
+        raise ValueError("An OpenSubtitles API key is required when account credentials are provided.")
     limit = int(max_candidates_per_file)
     if not 1 <= limit <= 5:
         raise ValueError("Candidate download limit must be between 1 and 5.")
