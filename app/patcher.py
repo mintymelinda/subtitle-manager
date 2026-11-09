@@ -64,7 +64,8 @@ def _subtitle_has_content(path: Path, stream: dict) -> bool:
     return True
 
 
-def _validate_streams(before: dict, after: dict, output_path: Path) -> None:
+def _validate_streams(before: dict, after: dict, output_path: Path,
+                      keep_subtitle_indices: list[int] | None = None) -> None:
     output_format = (after.get("format") or {}).get("format_name", "").lower()
     if "matroska" not in output_format:
         raise RuntimeError("Validation failed: output is not a Matroska container")
@@ -75,10 +76,15 @@ def _validate_streams(before: dict, after: dict, output_path: Path) -> None:
     if after_av != before_av:
         raise RuntimeError("Validation failed: existing video/audio streams changed")
 
-    before_subs = [_signature(s) for s in before_streams if s.get("codec_type") == "subtitle"]
+    indexed_before_subs = [(s.get("index"), _signature(s)) for s in before_streams
+                           if s.get("codec_type") == "subtitle"]
+    selected = indexed_before_subs if keep_subtitle_indices is None else [
+        item for item in indexed_before_subs if item[0] in set(keep_subtitle_indices)
+    ]
+    before_subs = [signature for _, signature in selected]
     after_subs = [s for s in after_streams if s.get("codec_type") == "subtitle"]
-    if len(after_subs) < len(before_subs) + 1:
-        raise RuntimeError("Validation failed: the new subtitle stream is missing")
+    if len(after_subs) != len(before_subs) + 1:
+        raise RuntimeError("Validation failed: the new subtitle stream is missing or unexpected existing subtitle tracks remain")
 
     remaining = list(after_subs)
     for old_signature in before_subs:
@@ -134,7 +140,7 @@ def _restore_from_backup(backup: Path, source: Path) -> None:
         rollback.unlink(missing_ok=True)
 
 
-def _patch_mkv_unlocked(source: Path, subtitle: Path, *, approved: bool, test_mode: bool = True, expected_size: int | None = None, expected_mtime: float | None = None) -> dict:
+def _patch_mkv_unlocked(source: Path, subtitle: Path, *, approved: bool, test_mode: bool = True, expected_size: int | None = None, expected_mtime: float | None = None, keep_subtitle_indices: list[int] | None = None) -> dict:
     """Patch one explicitly approved MKV. Test mode always retains the recovery copy."""
     if approved is not True:
         raise PermissionError("Explicit approval for this media file is required")
@@ -160,6 +166,12 @@ def _patch_mkv_unlocked(source: Path, subtitle: Path, *, approved: bool, test_mo
     if not any(s.get("codec_type") == "video" for s in before.get("streams", [])):
         raise ValueError("Source MKV does not contain a video stream")
 
+    subtitle_streams = [s for s in before.get("streams", []) if s.get("codec_type") == "subtitle"]
+    selected_indices = ({s.get("index") for s in subtitle_streams}
+                        if keep_subtitle_indices is None else set(keep_subtitle_indices))
+    known_indices = {s.get("index") for s in subtitle_streams}
+    if not selected_indices.issubset(known_indices):
+        raise ValueError("Selected subtitle streams do not match the current media file")
     token = uuid.uuid4().hex
     backup = source.with_name(f".{source.name}.recovery-{token}.bak")
     fd, working_name = tempfile.mkstemp(
@@ -174,16 +186,28 @@ def _patch_mkv_unlocked(source: Path, subtitle: Path, *, approved: bool, test_mo
         shutil.copy2(source, backup)
         if _snapshot(source) != original_snapshot:
             raise RuntimeError("Source media changed while the recovery copy was being created")
-        command = [
-            "mkvmerge", "-o", str(working), str(source),
-            "--language", "0:eng", str(subtitle)
-        ]
+        mux_info = subprocess.run(
+            ["mkvmerge", "-J", str(source)], check=True, capture_output=True,
+            text=True, timeout=90,
+        )
+        mux_tracks = [track for track in json.loads(mux_info.stdout or "{}").get("tracks", [])
+                      if track.get("type") == "subtitles"]
+        if len(mux_tracks) != len(subtitle_streams):
+            raise RuntimeError("Could not safely map inspected subtitle streams to MKVToolNix track IDs")
+        selected_track_ids = [str(track["id"]) for stream, track in zip(subtitle_streams, mux_tracks)
+                              if stream.get("index") in selected_indices]
+        command = ["mkvmerge", "-o", str(working)]
+        if selected_track_ids:
+            command.extend(["--subtitle-tracks", ",".join(selected_track_ids)])
+        else:
+            command.append("--no-subtitles")
+        command.extend([str(source), "--language", "0:eng", str(subtitle)])
         subprocess.run(command, check=True, capture_output=True, text=True, timeout=3600)
         if not working.is_file() or working.stat().st_size == 0:
             raise RuntimeError("MKVToolNix did not produce a valid working file")
 
         candidate = _probe(working)
-        _validate_streams(before, candidate, working)
+        _validate_streams(before, candidate, working, list(selected_indices))
         with working.open("rb") as handle:
             os.fsync(handle.fileno())
         _preserve_metadata(source, working)
@@ -198,7 +222,7 @@ def _patch_mkv_unlocked(source: Path, subtitle: Path, *, approved: bool, test_mo
 
         try:
             final = _probe(source)
-            _validate_streams(before, final, source)
+            _validate_streams(before, final, source, list(selected_indices))
             final_stat = source.stat()
             original_stat = backup.stat()
             if final_stat.st_mode & 0o7777 != original_stat.st_mode & 0o7777:
@@ -221,7 +245,9 @@ def _patch_mkv_unlocked(source: Path, subtitle: Path, *, approved: bool, test_mo
             "backup": str(backup) if backup.exists() else None,
             "test_mode": test_mode,
             "video_audio_streams_preserved": True,
-            "existing_subtitles_preserved": True,
+            "existing_subtitles_preserved": len(selected_indices) == len(subtitle_streams),
+            "existing_subtitle_streams_kept": sorted(selected_indices),
+            "existing_subtitle_streams_removed": sorted(known_indices - selected_indices),
             "english_subtitle_added": True,
             "metadata_preserved": True,
         }
@@ -233,7 +259,7 @@ def _patch_mkv_unlocked(source: Path, subtitle: Path, *, approved: bool, test_mo
         working.unlink(missing_ok=True)
 
 
-def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool = True, expected_size: int | None = None, expected_mtime: float | None = None) -> dict:
+def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool = True, expected_size: int | None = None, expected_mtime: float | None = None, keep_subtitle_indices: list[int] | None = None) -> dict:
     """Serialize patch operations by canonical media path across app workers."""
     if approved is not True:
         raise PermissionError("Explicit approval for this media file is required")
@@ -247,7 +273,8 @@ def patch_mkv(source: Path, subtitle: Path, *, approved: bool, test_mode: bool =
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         return _patch_mkv_unlocked(canonical, subtitle, approved=approved,
                                    test_mode=test_mode, expected_size=expected_size,
-                                   expected_mtime=expected_mtime)
+                                   expected_mtime=expected_mtime,
+                                   keep_subtitle_indices=keep_subtitle_indices)
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)

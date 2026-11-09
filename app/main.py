@@ -40,6 +40,7 @@ class CandidateDecisionRequest(BaseModel):
 
 class InjectRequest(BaseModel):
     confirm: bool = False
+    keep_subtitle_indices: list[int] | None = None
 
 
 class OpenSubtitlesSettingsRequest(BaseModel):
@@ -215,7 +216,11 @@ button:disabled{opacity:.5;cursor:not-allowed}.notice{border-left:4px solid #eab
 .candidate-select{display:flex;align-items:center;gap:.35rem;white-space:nowrap;font-size:.9rem}
 .candidate-select input{width:auto;margin:0}
 .candidate-details{margin:.55rem 0;color:#cbd5e1}
-.candidate-details summary{cursor:pointer;color:#93c5fd}
+ .candidate-details summary{cursor:pointer;color:#93c5fd}
+.existing-subtitle-tracks{border:1px solid #475569;border-radius:8px;padding:.6rem;margin:.65rem 0}
+.existing-subtitle-tracks legend{color:#cbd5e1;font-size:.9rem}
+.existing-subtitle-track{display:flex;align-items:flex-start;gap:.5rem;margin:.4rem 0;color:#e5e7eb;font-size:.9rem}
+.existing-subtitle-track input{width:auto;margin:.15rem 0 0}
 .batch-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:.65rem;margin:.5rem 0 1rem}
 .batch-toolbar button:disabled{opacity:.45}
 #batch-selection-count{color:#aebbd0;font-size:.9rem}
@@ -252,6 +257,25 @@ let activeScanJobId=null;let activeTrackedJobId=null;
 function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
 function line(parent,label,value){const p=el("p");p.append(el("strong",label+": "),document.createTextNode(value===null||value===undefined?"Unknown":String(value)));parent.append(p);}
 function streams(value){if(!Array.isArray(value)||!value.length)return "";return value.map(s=>[s.codec,s.language,s.title].filter(Boolean).join(" · ")||JSON.stringify(s)).join("; ");}
+function renderExistingSubtitleControls(card,candidate){
+    const tracks=candidate.inspection?.subtitle_streams||[];
+    const fieldset=el("fieldset",undefined,"existing-subtitle-tracks");
+    const legend=el("legend","Existing subtitle tracks — included by default");
+    fieldset.append(legend);
+    if(!tracks.length){fieldset.append(el("p","No existing subtitle tracks."));card.append(fieldset);return;}
+    for(const track of tracks){
+        const label=el("label",undefined,"existing-subtitle-track");
+        const checkbox=document.createElement("input");checkbox.type="checkbox";checkbox.checked=true;
+        checkbox.value=String(track.index);checkbox.dataset.subtitleIndex=String(track.index);
+        const description=["Stream "+track.index,track.language||"und",track.codec||"unknown codec",track.title].filter(Boolean).join(" · ");
+        label.append(checkbox,document.createTextNode(description));fieldset.append(label);
+    }
+    card.append(fieldset);
+}
+function selectedSubtitleIndices(candidateId){
+    const card=[...candidateList.querySelectorAll(".candidate")].find(item=>item.dataset.candidateId===String(candidateId));
+    return card?[...card.querySelectorAll(".existing-subtitle-track input:checked")].map(input=>Number(input.value)):[];
+}
 async function loadCandidates(){const r=await fetch("/api/candidates");const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);renderCandidates(d.candidates);}
 const selectedCandidateIds = new Set();
 
@@ -302,6 +326,7 @@ function renderCandidates(items) {
 
     for (const c of items) {
         const card = el("article", undefined, "candidate");
+        card.dataset.candidateId=String(c.id);
         const heading = el("div", undefined, "candidate-heading");
         const title = el("div", undefined, "candidate-title");
         title.append(el("h3", c.file_name));
@@ -340,6 +365,7 @@ function renderCandidates(items) {
         line(details, "Existing audio tracks", streams(c.inspection?.audio_streams));
         line(details, "Existing subtitle tracks", streams(c.inspection?.subtitle_streams));
         card.append(details);
+        renderExistingSubtitleControls(card,c);
 
         if (c.is_stale) card.append(el("p", "This candidate is stale: the media file changed after discovery. Rescan before reviewing.", "warning"));
         if (c.patch_status === "interrupted") card.append(el("p", "An earlier injection was interrupted. Inspect the media file and retained recovery copy manually before proceeding.", "warning"));
@@ -471,7 +497,7 @@ async function runBatch() {
             const response = await fetch("/api/candidates/" + id + "/inject", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({confirm: true})
+                body: JSON.stringify({confirm: true, keep_subtitle_indices: selectedSubtitleIndices(id)})
             });
             const result = await response.json();
             if (!response.ok) throw new Error(result.detail || response.statusText);
@@ -509,13 +535,13 @@ try{
  const r=await fetch("/api/candidates/"+id+"/decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision})});
  const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);
  if(decision==="approved"){
-  const injection=await fetch("/api/candidates/"+id+"/inject",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirm:true})});
+  const injection=await fetch("/api/candidates/"+id+"/inject",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirm:true,keep_subtitle_indices:selectedSubtitleIndices(id)})});
   const result=await injection.json();if(!injection.ok){await fetch("/api/candidates/"+id+"/decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision:"pending"})});throw Error(result.detail||injection.statusText);}
   trackJob(result.job_id);
  }else{await loadCandidates();}
 }catch(e){alert("Could not "+(decision==="approved"?"approve and inject":"save decision")+": "+e.message);button.disabled=false;await loadCandidates();}
 }
-async function inject(id,button){const mode=document.querySelector("#mode").textContent;const warning=mode==="TEST MODE"?"TEST MODE will replace this MKV and retain a recovery copy beside it.":"LIVE MODE will replace this MKV; its recovery copy is deleted only after post-replacement verification.";if(!confirm(warning+"\\n\\nInject the explicitly approved subtitle into this exact media file now?"))return;button.disabled=true;try{const r=await fetch("/api/candidates/"+id+"/inject",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirm:true})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);trackJob(d.job_id);}catch(e){alert("Could not start injection: "+e.message);button.disabled=false;await loadCandidates();}}
+async function inject(id,button){const mode=document.querySelector("#mode").textContent;const warning=mode==="TEST MODE"?"TEST MODE will replace this MKV and retain a recovery copy beside it.":"LIVE MODE will replace this MKV; its recovery copy is deleted only after post-replacement verification.";if(!confirm(warning+"\\n\\nInject the explicitly approved subtitle into this exact media file now?"))return;button.disabled=true;try{const r=await fetch("/api/candidates/"+id+"/inject",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirm:true,keep_subtitle_indices:selectedSubtitleIndices(id)})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);trackJob(d.job_id);}catch(e){alert("Could not start injection: "+e.message);button.disabled=false;await loadCandidates();}}
 async function loadProviderSettings(){try{const r=await fetch("/api/settings/opensubtitles"),s=await r.json();if(!r.ok)throw Error(s.detail||r.statusText);document.querySelector("#provider-status").textContent=s.configured?"OpenSubtitles is configured"+(s.has_account_credentials?" with account credentials.":" using the API-key allowance."):"OpenSubtitles is not configured yet.";document.querySelector("#provider-limit").value=s.max_candidates_per_file;document.querySelector("#provider-log-level").value=s.log_level||"INFO";}catch(e){document.querySelector("#provider-status").textContent="Could not load provider settings: "+e.message;}}
 document.querySelector("#provider-save").addEventListener("click",async()=>{const button=document.querySelector("#provider-save"),message=document.querySelector("#provider-message");button.disabled=true;message.textContent="Saving securely…";try{const r=await fetch("/api/settings/opensubtitles",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({api_key:document.querySelector("#provider-api-key").value,username:document.querySelector("#provider-username").value,password:document.querySelector("#provider-password").value,max_candidates_per_file:Number(document.querySelector("#provider-limit").value),log_level:document.querySelector("#provider-log-level").value,clear_account_credentials:document.querySelector("#provider-clear-account").checked})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);document.querySelector("#provider-api-key").value="";document.querySelector("#provider-username").value="";document.querySelector("#provider-password").value="";document.querySelector("#provider-clear-account").checked=false;message.textContent="Settings saved to the persistent data volume. "+(d.configured?"Provider is configured.":"");await loadProviderSettings();const c=await fetch("/api/config").then(x=>x.json());document.querySelector("#provider-status").textContent=c.opensubtitles_configured?"OpenSubtitles is configured.":"OpenSubtitles is not configured.";}catch(e){message.textContent="Could not save settings: "+e.message;}finally{button.disabled=false;}});
 document.querySelector("#provider-test").addEventListener("click",async()=>{const button=document.querySelector("#provider-test"),message=document.querySelector("#provider-message");button.disabled=true;message.textContent="Testing OpenSubtitles…";try{const r=await fetch("/api/settings/opensubtitles/test",{method:"POST"}),d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);message.textContent=d.message;}catch(e){message.textContent="Connection test failed: "+e.message;}finally{button.disabled=false;}});
@@ -765,7 +791,7 @@ def candidate_decision(candidate_id: int, request: CandidateDecisionRequest):
 
 
 def _run_injection_job(job_id: int, candidate_id: int, row: dict,
-                       source: Path, subtitle: Path):
+                       source: Path, subtitle: Path, keep_subtitle_indices: list[int] | None = None):
     start_job(job_id)
     update_job_progress(job_id, phase="muxing", current_file=row["media_relative_path"], total=1)
     logger.info("injection_started", extra={"event":"injection_started","job_id":job_id,
@@ -774,7 +800,8 @@ def _run_injection_job(job_id: int, candidate_id: int, row: dict,
     before = set(source.parent.glob(pattern))
     try:
         result = patch_mkv(source, subtitle, approved=True, test_mode=settings.test_mode,
-                           expected_size=row["media_size"], expected_mtime=row["media_modified_at"])
+                           expected_size=row["media_size"], expected_mtime=row["media_modified_at"],
+                           keep_subtitle_indices=keep_subtitle_indices)
         finish_candidate_patch(candidate_id, "patched", result, result.get("backup"))
         record_job_item(job_id, media_path=row["media_relative_path"], status="completed",
                         phase="verified", candidate_id=candidate_id, review_decision="approved",
@@ -860,6 +887,21 @@ def inject_candidate(candidate_id: int, request: InjectRequest, background_tasks
         raise HTTPException(status_code=415, detail="Unsupported subtitle format.")
     if Path(row["file_name"]).suffix.lower() != subtitle.suffix.lower():
         raise HTTPException(status_code=409, detail="Staged subtitle format does not match the reviewed candidate.")
+    inspected = next((item for item in list_candidates(row["media_relative_path"])
+                      if item["id"] == candidate_id), None)
+    if inspected is None:
+        raise HTTPException(status_code=409, detail="Could not verify the inspected subtitle tracks. Rescan before injecting.")
+    available_indices = {int(track["index"]) for track in
+                         (inspected.get("inspection") or {}).get("subtitle_streams", [])
+                         if isinstance(track.get("index"), int)}
+    requested_indices = request.keep_subtitle_indices
+    if requested_indices is not None:
+        if any(not isinstance(index, int) or isinstance(index, bool) for index in requested_indices):
+            raise HTTPException(status_code=400, detail="Subtitle stream selections must be integer stream indices.")
+        if len(requested_indices) != len(set(requested_indices)) or not set(requested_indices).issubset(available_indices):
+            raise HTTPException(status_code=409, detail="The selected existing subtitle tracks no longer match the inspected media. Rescan before injecting.")
+    else:
+        requested_indices = sorted(available_indices)
     try:
         claimed = claim_candidate_patch(candidate_id, test_mode=settings.test_mode)
     except ValueError as exc:
@@ -872,12 +914,12 @@ def inject_candidate(candidate_id: int, request: InjectRequest, background_tasks
                     phase="queued", candidate_id=candidate_id, review_decision="approved",
                     patch_status="running")
     if background_tasks is None:
-        result = _run_injection_job(job["id"], candidate_id, row, source, subtitle)
+        result = _run_injection_job(job["id"], candidate_id, row, source, subtitle, requested_indices)
         if result is None:
             raise HTTPException(status_code=500, detail="Subtitle injection failed. Inspect job history and retained recovery files.")
         return {"candidate_id":candidate_id,"media":row["media_relative_path"],
                 "test_mode":settings.test_mode,**result}
-    background_tasks.add_task(_run_injection_job, job["id"], candidate_id, row, source, subtitle)
+    background_tasks.add_task(_run_injection_job, job["id"], candidate_id, row, source, subtitle, requested_indices)
     logger.info("injection_queued", extra={"event":"injection_queued","job_id":job["id"],
                 "candidate_id":candidate_id,"media_path":row["media_relative_path"],"phase":"queued"})
     return {"job_id":job["id"],"candidate_id":candidate_id,"status":"queued",
