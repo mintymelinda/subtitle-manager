@@ -362,7 +362,6 @@ function renderCandidates(items) {
 async function runBatch(action) {
     const ids = [...selectedCandidateIds];
     if (!ids.length) return;
-    const candidates = [...candidateList.querySelectorAll(".candidate")];
     const label = action === "approve" ? "Approve the selected candidates?" : "Inject all selected candidates that are already approved?";
     const mode = document.querySelector("#mode").textContent;
     const warning = action === "inject"
@@ -379,11 +378,22 @@ async function runBatch(action) {
     const message = document.querySelector("#batch-message");
     let succeeded = 0;
     const failures = [];
+    let candidatesById;
+    try {
+        const response = await fetch("/api/candidates");
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || response.statusText);
+        candidatesById = new Map(payload.candidates.map(candidate => [candidate.id, candidate]));
+    } catch (error) {
+        message.textContent = "Could not load selected candidates: " + error.message;
+        approveButton.disabled = false;
+        injectButton.disabled = false;
+        return;
+    }
 
     for (const id of ids) {
         try {
-            const candidate = (await fetch("/api/candidates").then(response => response.json())).candidates
-                .find(item => item.id === id);
+            const candidate = candidatesById.get(id);
             if (!candidate) throw new Error("Candidate is no longer available.");
             if (action === "approve") {
                 if (candidate.review_decision === "approved") {
