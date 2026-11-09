@@ -114,13 +114,13 @@ class OpenSubtitlesTests(unittest.TestCase):
             with self.assertLogs("subtitle_manager", level="DEBUG") as captured_logs:
                 results = client.search(path, {"title": "The Matrix", "year": "1999", "imdb_id": "tt0133093"})
 
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["file_id"], 2)
+        self.assertEqual({item["file_id"] for item in results}, {2, 3})
+        self.assertEqual(next(item for item in results if item["file_id"] == 3)["format"], "")
         diagnostic_output = "\\n".join(captured_logs.output)
         self.assertIn("opensubtitles_candidate_filtered", diagnostic_output)
         self.assertIn("unsupported_language", diagnostic_output)
         self.assertIn("machine_translated", diagnostic_output)
-        self.assertIn("unsupported_format", diagnostic_output)
+        self.assertNotIn("unsupported_format", diagnostic_output)
         self.assertIn("opensubtitles_candidate_accepted", diagnostic_output)
         self.assertIn("accepted_count", diagnostic_output)
         self.assertTrue(results[0]["moviehash_match"])
@@ -129,6 +129,44 @@ class OpenSubtitlesTests(unittest.TestCase):
         self.assertEqual(captured[0].get_header("Api-key"), "test-secret")
         self.assertEqual(captured[0].get_header("User-agent"), "SubtitleManager v0.1.0")
 
+
+
+    def test_search_preserves_extensionless_provider_files_for_all_13_episodes(self):
+        """Regression for the Bob's Burgers S1 log: provider names end in .eng."""
+        def opener(request, timeout=30):
+            payload = {
+                "data": [{
+                    "attributes": {
+                        "language": "en",
+                        "release": "Bobs Burgers",
+                        "files": [{
+                            "file_id": int(urllib.parse.parse_qs(
+                                urllib.parse.urlparse(request.full_url).query
+                            ).get("episode_number", ["1"])[0]) + 100,
+                            "file_name": "Bobs Burgers - S01E01 - Episode.eng",
+                        }],
+                    }
+                }]
+            }
+            return FakeResponse(__import__("json").dumps(payload).encode())
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = OpenSubtitlesClient(
+                "test-secret", opener=opener, sleeper=lambda _s: None
+            )
+            discovered = []
+            for episode in range(1, 14):
+                media = root / (
+                    f"Bobs.Burgers.S01E{episode:02d}.Episode.WEBDL-1080p.mkv"
+                )
+                media.write_bytes(b"small test media")
+                discovered.extend(client.search(media))
+
+        self.assertEqual(len(discovered), 13)
+        self.assertEqual(len({item["file_id"] for item in discovered}), 13)
+        self.assertTrue(all(item["format"] == "" for item in discovered))
+        self.assertTrue(all(item["file_id"] > 0 for item in discovered))
 
     def test_subtitle_payload_language_assessment(self):
         english = ("This is a long English subtitle sentence with enough words to "

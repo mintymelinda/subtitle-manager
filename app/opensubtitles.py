@@ -295,22 +295,28 @@ class OpenSubtitlesClient:
                 filtered_result("no_files")
                 continue
             for subtitle_file in files:
-                file_name = str(subtitle_file.get("file_name") or "")
-                extension = Path(file_name).suffix.lower()
-                if extension not in SUPPORTED_EXTENSIONS:
-                    filtered_result("unsupported_format", file_name=Path(file_name).name,
-                                    file_count=len(files))
-                    continue
+                file_name = Path(str(subtitle_file.get("file_name") or "")).name
                 file_id = subtitle_file.get("file_id")
-                if not file_id:
-                    filtered_result("missing_file_id", file_name=Path(file_name).name)
+                try:
+                    file_id = int(file_id)
+                except (TypeError, ValueError):
+                    filtered_result("missing_file_id", file_name=file_name)
                     continue
+                if file_id <= 0:
+                    filtered_result("missing_file_id", file_name=file_name)
+                    continue
+                # OpenSubtitles file_name is descriptive metadata, not a reliable
+                # format declaration. Some valid files are named *.eng, *.en, or
+                # have no extension. Keep identifiable downloads and validate
+                # the actual downloaded filename and payload in download().
+                extension = Path(file_name).suffix.lower()
+                subtitle_format = extension.lstrip(".") if extension in SUPPORTED_EXTENSIONS else ""
                 candidates.append({
                     "subtitle_id": attributes.get("subtitle_id") or item.get("id"),
-                    "file_id": int(file_id),
-                    "file_name": Path(file_name).name,
+                    "file_id": file_id,
+                    "file_name": file_name,
                     "language": "en",
-                    "format": extension.lstrip("."),
+                    "format": subtitle_format,
                     "release": str(attributes.get("release") or ""),
                     "moviehash_match": bool(attributes.get("moviehash_match")),
                     "download_count": int(attributes.get("download_count") or 0),
@@ -326,7 +332,7 @@ class OpenSubtitlesClient:
                     "opensubtitles_candidate_accepted file=%s", Path(file_name).name,
                     extra={"event": "opensubtitles_candidate_accepted",
                            "media_path": str(media_path), "phase": "candidate_selection",
-                           "file_name": Path(file_name).name, "file_id": int(file_id),
+                           "file_name": file_name, "file_id": file_id,
                            "language": language, "match_score": score,
                            "match_reasons": reasons,
                            "moviehash_match": bool(attributes.get("moviehash_match")),

@@ -143,7 +143,11 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                             staged_file.flush()
                             os.fsync(staged_file.fileno())
                         os.replace(temporary, target)
-                        mark_candidate_staged(row["id"], str(target), remaining, assessment)
+                        mark_candidate_staged(
+                            row["id"], str(target), remaining, assessment,
+                            file_name=Path(file_name).name,
+                            subtitle_format=extension.lstrip("."),
+                        )
                         status = "staged"
                         logger.info("subtitle_candidate_staged", extra={"event":"subtitle_candidate_staged","candidate_id":row["id"],"media_path":relative_media_path,"phase":"download","status":"staged"})
                 except OpenSubtitlesError as exc:
