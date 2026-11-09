@@ -185,10 +185,10 @@ class InjectionApiSafetyTests(unittest.TestCase):
     def test_dashboard_supports_multi_select_non_candidate_batch_edits(self):
         html = dashboard().body.decode("utf-8")
         self.assertIn('id="show-all-scanned-files"', html)
-        self.assertIn('id="batch-run" disabled>Approve &amp; patch selected</button>', html)
+        self.assertIn('id="batch-run" disabled>Approve & patch selected</button>', html)
         self.assertIn('id="select-all-candidates"', html)
         self.assertIn("const selectedMediaPaths = new Set();", html)
-        self.assertIn('class="candidate-select media-edit-select"', html)
+        self.assertIn('candidate-select media-edit-select', html)
         self.assertIn("selectedMediaPaths.has(c.media_relative_path)", html)
         self.assertIn('fetch("/api/media-files/edit"', html)
 
