@@ -479,8 +479,7 @@ def reset_candidate_reviews_for_media(relative_path: str) -> None:
         db.execute(
             """UPDATE subtitle_candidates
                SET review_decision='pending', review_updated_at=NULL,
-                   patch_status='not_started', patch_started_at=NULL,
-                   patch_completed_at=NULL, updated_at=CURRENT_TIMESTAMP
+                   updated_at=CURRENT_TIMESTAMP
                WHERE media_relative_path=? AND patch_status!='running'""",
             (relative_path,),
         )
