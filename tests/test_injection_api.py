@@ -10,7 +10,9 @@ from app.database import (
     initialize, record_scan, save_candidate, mark_candidate_staged,
     set_candidate_decision, get_candidate,
 )
-from app.main import (\n    InjectRequest, MediaEditRequest, candidates, edit_scanned_media, inject_candidate,\n)
+from app.main import (
+    InjectRequest, MediaEditRequest, candidates, edit_scanned_media, inject_candidate,
+)
 
 
 class InjectionApiSafetyTests(unittest.TestCase):
