@@ -13,4 +13,4 @@ services:
     environment:
       MEDIA_ROOT: /media
       DATABASE_PATH: /app/data/subtitle-manager.sqlite3
-      TEST_MODE: ${TEST_MODE:-true}
+      TEST_MODE: ${TEST_MODE:-false}

@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     port: int = 8080
     database_path: str = "/app/data/subtitle-manager.sqlite3"
     media_root: str = "/media"
-    test_mode: bool = True
+    test_mode: bool = False
     open_subtitles_api_key: str = ""
     open_subtitles_username: str = ""
     open_subtitles_password: str = ""

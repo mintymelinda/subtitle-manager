@@ -7,9 +7,10 @@ A self-hosted web application for finding missing English subtitles and adding a
 - Scanning and subtitle discovery do not modify media.
 - OpenSubtitles results are ranked and downloaded into a private application staging directory, never into the media library.
 - **Every media modification requires explicit approval for that file.**
-- Test mode is enabled by default. Each injection action targets exactly one explicitly approved file and retains its recovery copy. **Test mode still performs the replacement**; it is not a dry run.
+- Live mode is enabled by default. Each injection action targets exactly one explicitly approved file. Its temporary recovery copy is removed only after successful post-replacement verification.
+- Test mode is an explicit opt-in (`TEST_MODE=true`). It still performs the replacement and retains the recovery copy; **it is not a dry run**.
 - Patching is transactional: the application builds and validates a working copy, retains a temporary original for recovery, then atomically replaces the source on the same filesystem where possible.
-- No permanent library-wide backups are created. Temporary recovery copies are removed after successful verification in normal mode; test mode retains its backup for inspection.
+- No permanent library-wide backups are created. Temporary recovery copies are removed after successful verification in live mode; test mode retains its backup for inspection.
 - On failure, the original is left in place and temporary recovery files are retained.
 
 ## Current implementation
@@ -77,7 +78,7 @@ Existing installations that still have OpenSubtitles values in `.env` are suppor
 
 4. Open http://localhost:8080, choose **Browse folders**, navigate the mounted directory, and select one or more folders to scan. If none are selected, the scan defaults to `/media`. The browser is restricted to the mounted media volume and does not follow symbolic links.
 
-Test mode is enabled by default. After reviewing and approving a candidate, use **Inject approved subtitle** to patch that one MKV. Test mode performs the actual replacement and retains the original recovery copy beside the media file. Set `TEST_MODE=false` only when ready for normal operation; in normal mode the recovery copy is deleted only after successful post-replacement verification. The scanner deliberately discovers only MKV containers because the current transactional patcher supports MKV only. Other video files are skipped entirely and will not receive subtitle candidates.
+Live mode is enabled by default. After reviewing and approving a candidate, use **Inject approved subtitle** to patch that one MKV. In live mode, the recovery copy is deleted only after successful post-replacement verification. To opt into test mode, set `TEST_MODE=true`; test mode still performs the actual replacement and retains the original recovery copy beside the media file. The scanner deliberately discovers only MKV containers because the current transactional patcher supports MKV only. Other video files are skipped entirely and will not receive subtitle candidates.
 
 ## Development
 
