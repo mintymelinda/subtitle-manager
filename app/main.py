@@ -398,6 +398,7 @@ function renderCandidates(items) {
             const checkbox = document.createElement("input");
             checkbox.type = "checkbox";
             checkbox.value = String(c.id);
+            checkbox.checked = selectedCandidateIds.has(c.id);
             checkbox.setAttribute("aria-label", "Select " + c.file_name);
             checkbox.addEventListener("change", () => {
                 if (checkbox.checked) selectedCandidateIds.add(c.id);
