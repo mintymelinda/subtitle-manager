@@ -274,7 +274,7 @@ class OpenSubtitlesClient:
         def filtered_result(reason: str, **details) -> None:
             filtered[reason] = filtered.get(reason, 0) + 1
             logger.debug(
-                "opensubtitles_candidate_filtered",
+                "opensubtitles_candidate_filtered reason=%s", reason,
                 extra={"event": "opensubtitles_candidate_filtered",
                        "media_path": str(media_path), "phase": "candidate_selection",
                        "filter_reason": reason, **details},
@@ -323,7 +323,7 @@ class OpenSubtitlesClient:
                     "match_reasons": reasons,
                 })
                 logger.debug(
-                    "opensubtitles_candidate_accepted",
+                    "opensubtitles_candidate_accepted file=%s", Path(file_name).name,
                     extra={"event": "opensubtitles_candidate_accepted",
                            "media_path": str(media_path), "phase": "candidate_selection",
                            "file_name": Path(file_name).name, "file_id": int(file_id),
@@ -339,7 +339,8 @@ class OpenSubtitlesClient:
             reverse=True,
         )
         logger.info(
-            "opensubtitles_candidate_selection_summary",
+            "opensubtitles_candidate_selection_summary provider_count=%d accepted_count=%d filtered_count=%d",
+            len(provider_items), len(candidates), sum(filtered.values()),
             extra={"event": "opensubtitles_candidate_selection_summary",
                    "media_path": str(media_path), "phase": "candidate_selection",
                    "provider_count": len(provider_items), "accepted_count": len(candidates),
