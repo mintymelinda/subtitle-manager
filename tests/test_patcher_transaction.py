@@ -172,5 +172,30 @@ class TransactionalPatcherTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), self.original)
 
 
+
+    def test_existing_track_only_remux_never_supplies_a_new_subtitle(self):
+        after = {"format": {"format_name": "matroska"}, "streams": [
+            stream("video", "h264"), stream("audio", "aac")
+        ]}
+        commands = []
+
+        def mux(command, **_kwargs):
+            commands.append(command)
+            if "-J" in command:
+                return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"tracks": []}), stderr="")
+            output = Path(command[command.index("-o") + 1])
+            output.write_bytes(b"remuxed without subtitles")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with patch("app.patcher._probe", side_effect=[self.before, after, after]), patch(
+            "app.patcher.subprocess.run", side_effect=mux
+        ):
+            result = patch_mkv(self.source, None, approved=True, keep_subtitle_indices=[])
+
+        self.assertTrue(result["existing_tracks_only"])
+        self.assertFalse(result["target_language_subtitle_added"])
+        self.assertIn("--no-subtitles", commands[-1])
+        self.assertNotIn(str(self.subtitle), commands[-1])
+
 if __name__ == "__main__":
     unittest.main()
