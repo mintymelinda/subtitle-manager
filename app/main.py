@@ -241,8 +241,7 @@ input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-
 <section class="panel"><div class="actions" style="justify-content:space-between;align-items:center"><div><h2>Subtitle candidate review</h2><p>Review candidates for the latest scan.</p></div><button id="clear-saved-data" class="secondary" type="button">Clear saved data</button></div><div class="batch-toolbar">
 <button id="select-all-candidates" class="secondary" type="button" disabled>Select all eligible</button>
 <button id="clear-candidate-selection" class="secondary" type="button" disabled>Clear selection</button>
-<button id="batch-approve" disabled>Approve selected</button>
-<button id="batch-inject" class="secondary" disabled>Inject approved selected</button>
+<button id="batch-run" disabled>Approve & inject selected</button>
 <span id="batch-selection-count" aria-live="polite">0 candidates selected</span>
 </div>
 <p id="batch-message" aria-live="polite"></p>
@@ -269,8 +268,7 @@ function updateBatchControls() {
     const count = selectedCandidateIds.size;
     document.querySelector("#batch-selection-count").textContent =
         count + (count === 1 ? " candidate selected" : " candidates selected");
-    document.querySelector("#batch-approve").disabled = count === 0;
-    document.querySelector("#batch-inject").disabled = count === 0;
+    document.querySelector("#batch-run").disabled = count === 0;
     const selectable = candidateList.querySelectorAll(".candidate-select input[type='checkbox']");
     document.querySelector("#select-all-candidates").disabled =
         selectable.length === 0 || count === selectable.length;
@@ -385,25 +383,50 @@ function renderCandidates(items) {
 document.querySelector("#select-all-candidates").addEventListener("click", selectAllCandidates);
 document.querySelector("#clear-candidate-selection").addEventListener("click", clearCandidateSelection);
 
-async function runBatch(action) {
+async function waitForBatchInjection(jobId, candidateId, index, total) {
+    const panel = document.querySelector("#job-progress");
+    while (true) {
+        const response = await fetch("/api/jobs/" + jobId, {
+            headers: {"Accept": "application/json"}
+        });
+        const job = await readJsonResponse(response, "Batch injection status");
+        panel.replaceChildren();
+        panel.append(el("strong", "Batch injection · " + index + "/" + total
+            + " · Candidate #" + candidateId + " · Job #" + job.id + " · " + job.status));
+        line(panel, "Progress", job.completed + "/" + job.total
+            + " · " + job.succeeded + " succeeded · " + job.failed + " failed");
+        line(panel, "Phase", job.phase || "queued");
+        line(panel, "Current file", job.current_file || "—");
+        for (const item of job.items || []) {
+            const detail = item.status === "failed"
+                ? item.media_path + " — failed: " + (item.error || "unknown error")
+                : item.media_path + " — " + item.phase + " (" + item.status + ")";
+            panel.append(el("p", detail, item.status === "failed" ? "warning" : ""));
+        }
+        if (job.error) panel.append(el("p", job.error, "warning"));
+        if (["completed", "failed", "cancelled", "interrupted"].includes(job.status)) {
+            return job;
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+}
+
+async function runBatch() {
     const ids = [...selectedCandidateIds];
     if (!ids.length) return;
-    const label = action === "approve" ? "Approve the selected candidates?" : "Inject all selected candidates that are already approved?";
     const mode = document.querySelector("#mode").textContent;
-    const warning = action === "inject"
-        ? (mode === "TEST MODE"
-            ? " TEST MODE will replace each selected MKV and retain recovery copies."
-            : " LIVE MODE will replace each selected MKV; recovery copies are deleted only after verification.")
-        : " Approval does not modify media; injection is a separate action.";
-    if (!confirm(label + warning)) return;
+    const warning = mode === "TEST MODE"
+        ? " TEST MODE will replace each selected MKV and retain recovery copies."
+        : " LIVE MODE will replace each selected MKV; recovery copies are deleted only after verification.";
+    if (!confirm("Approve and inject all selected candidates in sequence?" + warning)) return;
 
-    const approveButton = document.querySelector("#batch-approve");
-    const injectButton = document.querySelector("#batch-inject");
-    approveButton.disabled = true;
-    injectButton.disabled = true;
+    const runButton = document.querySelector("#batch-run");
+    runButton.disabled = true;
     const message = document.querySelector("#batch-message");
+    const panel = document.querySelector("#job-progress");
     let succeeded = 0;
     const failures = [];
+    message.textContent = "Preparing " + ids.length + " selected candidate(s)…";
     let candidatesById;
     try {
         const response = await fetch("/api/candidates");
@@ -412,54 +435,58 @@ async function runBatch(action) {
         candidatesById = new Map(payload.candidates.map(candidate => [candidate.id, candidate]));
     } catch (error) {
         message.textContent = "Could not load selected candidates: " + error.message;
-        approveButton.disabled = false;
-        injectButton.disabled = false;
+        runButton.disabled = false;
         return;
     }
 
-    for (const id of ids) {
+    for (let index = 0; index < ids.length; index++) {
+        const id = ids[index];
+        const candidate = candidatesById.get(id);
+        message.textContent = "Processing candidate " + (index + 1) + "/" + ids.length
+            + " (#" + id + ")…";
+        panel.replaceChildren(el("strong", "Batch injection · " + (index + 1) + "/" + ids.length
+            + " · Candidate #" + id + " · preparing"));
         try {
-            const candidate = candidatesById.get(id);
             if (!candidate) throw new Error("Candidate is no longer available.");
-            if (action === "approve") {
-                if (candidate.review_decision === "approved") {
-                    succeeded++;
-                    continue;
-                }
-                const response = await fetch("/api/candidates/" + id + "/decision", {
+            if (candidate.review_decision !== "approved") {
+                const approval = await fetch("/api/candidates/" + id + "/decision", {
                     method: "POST",
                     headers: {"Content-Type": "application/json"},
                     body: JSON.stringify({decision: "approved"})
                 });
-                const result = await response.json();
-                if (!response.ok) throw new Error(result.detail || response.statusText);
-                succeeded++;
-            } else {
-                if (candidate.review_decision !== "approved") {
-                    throw new Error("Approve this candidate before batch injection.");
-                }
-                const response = await fetch("/api/candidates/" + id + "/inject", {
-                    method: "POST",
-                    headers: {"Content-Type": "application/json"},
-                    body: JSON.stringify({confirm: true})
-                });
-                const result = await response.json();
-                if (!response.ok) throw new Error(result.detail || response.statusText);
-                if (result.job_id) trackJob(result.job_id);
-                succeeded++;
+                const result = await approval.json();
+                if (!approval.ok) throw new Error(result.detail || approval.statusText);
             }
+            line(panel, "Review", "Approved");
+            const response = await fetch("/api/candidates/" + id + "/inject", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({confirm: true})
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.detail || response.statusText);
+            const job = await waitForBatchInjection(result.job_id, id, index + 1, ids.length);
+            if (job.status !== "completed") {
+                throw new Error(job.error || "Injection job ended with status " + job.status + ".");
+            }
+            succeeded++;
+            message.textContent = "Processed " + (index + 1) + "/" + ids.length
+                + " candidates · " + succeeded + " injected · " + failures.length + " failed.";
         } catch (error) {
             failures.push("Candidate #" + id + ": " + error.message);
+            panel.append(el("p", "Candidate #" + id + " failed: " + error.message, "warning"));
+            message.textContent = "Processed " + (index + 1) + "/" + ids.length
+                + " candidates · " + succeeded + " injected · " + failures.length + " failed.";
         }
     }
 
-    message.textContent = succeeded + " completed; " + failures.length + " failed."
+    message.textContent = succeeded + " injected; " + failures.length + " failed."
         + (failures.length ? " " + failures.join(" | ") : "");
     await loadCandidates();
+    runButton.disabled = selectedCandidateIds.size === 0;
 }
 
-document.querySelector("#batch-approve").addEventListener("click", () => runBatch("approve"));
-document.querySelector("#batch-inject").addEventListener("click", () => runBatch("inject"));
+document.querySelector("#batch-run").addEventListener("click", runBatch);
 
 async function decide(id,decision,button){
 const mode=document.querySelector("#mode").textContent;
