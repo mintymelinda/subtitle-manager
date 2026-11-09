@@ -47,12 +47,13 @@ class OpenSubtitlesSettingsRequest(BaseModel):
     username: str = ""
     password: str = ""
     max_candidates_per_file: int = 2
+    log_level: str = "INFO"
     clear_account_credentials: bool = False
 
 
 @app.on_event("startup")
 def startup():
-    configure_logging()
+    configure_logging(load_provider_settings()["log_level"])
     initialize()
     patches = recover_interrupted_patches()
     jobs = recover_interrupted_jobs()
@@ -75,11 +76,30 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
         raise OpenSubtitlesError("Subtitle staging directory must be outside the media library.")
     logger.info("opensubtitles_search_started", extra={"event":"opensubtitles_search_started","media_path":relative_media_path,"phase":"discovery"})
     candidates = client.search(path, metadata)
-    logger.info("opensubtitles_search_completed", extra={"event":"opensubtitles_search_completed","media_path":relative_media_path,"phase":"discovery","status":f"{len(candidates)} candidates"})
+    logger.info("opensubtitles_search_completed", extra={"event":"opensubtitles_search_completed","media_path":relative_media_path,"phase":"discovery","status":f"{len(candidates)} candidates","provider_count":len(candidates)})
     summary = {"status": "no_candidates" if not candidates else "complete",
                "found": len(candidates), "staged": 0, "candidates": []}
     limit = load_provider_settings()["max_candidates_per_file"]
-    for candidate in candidates[:limit]:
+    selected = candidates[:limit]
+    logger.info(
+        "subtitle_candidate_download_selection",
+        extra={"event": "subtitle_candidate_download_selection",
+               "media_path": relative_media_path, "phase": "candidate_selection",
+               "provider_count": len(candidates), "selected_count": len(selected),
+               "candidate_limit": limit, "remaining_count": max(0, len(candidates) - len(selected))},
+    )
+    for rank, candidate in enumerate(selected, start=1):
+        logger.debug(
+            "subtitle_candidate_selected_for_download",
+            extra={"event": "subtitle_candidate_selected_for_download",
+                   "media_path": relative_media_path, "phase": "candidate_selection",
+                   "file_name": candidate["file_name"], "file_id": candidate["file_id"],
+                   "match_score": candidate["match_score"],
+                   "match_reasons": candidate["match_reasons"],
+                   "moviehash_match": candidate["moviehash_match"],
+                   "download_count": candidate["download_count"],
+                   "candidate_limit": limit, "selected_count": rank},
+        )
         row = save_candidate(
             relative_media_path, stat_result.st_size, stat_result.st_mtime, candidate
         )
@@ -148,6 +168,22 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
             "content_confidence": assessment.get("content_confidence"),
             "status": status,
         })
+    for candidate in candidates[len(selected):]:
+        logger.debug(
+            "subtitle_candidate_not_downloaded",
+            extra={"event": "subtitle_candidate_not_downloaded",
+                   "media_path": relative_media_path, "phase": "candidate_selection",
+                   "file_name": candidate["file_name"], "file_id": candidate["file_id"],
+                   "filter_reason": "per_file_download_limit",
+                   "candidate_limit": limit},
+        )
+    logger.info(
+        "subtitle_candidate_staging_summary",
+        extra={"event": "subtitle_candidate_staging_summary",
+               "media_path": relative_media_path, "phase": "candidate_selection",
+               "provider_count": len(candidates), "selected_count": len(selected),
+               "accepted_count": summary["staged"], "candidate_limit": limit},
+    )
     return summary
 
 @app.get("/", response_class=HTMLResponse)
@@ -175,7 +211,7 @@ input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-
 <label for="provider-api-key">API key</label><input id="provider-api-key" type="password" autocomplete="new-password" placeholder="Enter a new key (leave blank to keep the saved key)">
 <label for="provider-username">OpenSubtitles username (optional)</label><input id="provider-username" type="text" autocomplete="username" placeholder="Optional account username">
 <label for="provider-password">OpenSubtitles password (optional)</label><input id="provider-password" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved password">
-<label for="provider-limit">Maximum candidates downloaded per media file (1–5)</label><input id="provider-limit" type="number" min="1" max="5" step="1" value="2">
+<label for="provider-limit">Maximum candidates downloaded per media file (1–5)</label><input id="provider-limit" type="number" min="1" max="5" step="1" value="2">\n<label for="provider-log-level">Application logging level</label><select id="provider-log-level"><option value="DEBUG">DEBUG — detailed candidate selection diagnostics</option><option value="INFO">INFO — normal operational events</option><option value="WARNING">WARNING — warnings and errors</option><option value="ERROR">ERROR — errors only</option><option value="CRITICAL">CRITICAL — critical failures only</option></select>
 <label><input id="provider-clear-account" type="checkbox" style="width:auto"> Clear saved account username and password</label>
 <div class="actions"><button id="provider-save">Save settings</button><button id="provider-test" class="secondary">Test connection</button></div>
 <p id="provider-message" aria-live="polite"></p>
@@ -217,8 +253,8 @@ try{
 }catch(e){alert("Could not "+(decision==="approved"?"approve and inject":"save decision")+": "+e.message);button.disabled=false;await loadCandidates();}
 }
 async function inject(id,button){const mode=document.querySelector("#mode").textContent;const warning=mode==="TEST MODE"?"TEST MODE will replace this MKV and retain a recovery copy beside it.":"LIVE MODE will replace this MKV; its recovery copy is deleted only after post-replacement verification.";if(!confirm(warning+"\\n\\nInject the explicitly approved subtitle into this exact media file now?"))return;button.disabled=true;try{const r=await fetch("/api/candidates/"+id+"/inject",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirm:true})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);trackJob(d.job_id);}catch(e){alert("Could not start injection: "+e.message);button.disabled=false;await loadCandidates();}}
-async function loadProviderSettings(){try{const r=await fetch("/api/settings/opensubtitles"),s=await r.json();if(!r.ok)throw Error(s.detail||r.statusText);document.querySelector("#provider-status").textContent=s.configured?"OpenSubtitles is configured"+(s.has_account_credentials?" with account credentials.":" using the API-key allowance."):"OpenSubtitles is not configured yet.";document.querySelector("#provider-limit").value=s.max_candidates_per_file;}catch(e){document.querySelector("#provider-status").textContent="Could not load provider settings: "+e.message;}}
-document.querySelector("#provider-save").addEventListener("click",async()=>{const button=document.querySelector("#provider-save"),message=document.querySelector("#provider-message");button.disabled=true;message.textContent="Saving securely…";try{const r=await fetch("/api/settings/opensubtitles",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({api_key:document.querySelector("#provider-api-key").value,username:document.querySelector("#provider-username").value,password:document.querySelector("#provider-password").value,max_candidates_per_file:Number(document.querySelector("#provider-limit").value),clear_account_credentials:document.querySelector("#provider-clear-account").checked})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);document.querySelector("#provider-api-key").value="";document.querySelector("#provider-username").value="";document.querySelector("#provider-password").value="";document.querySelector("#provider-clear-account").checked=false;message.textContent="Settings saved to the persistent data volume. "+(d.configured?"Provider is configured.":"");await loadProviderSettings();const c=await fetch("/api/config").then(x=>x.json());document.querySelector("#provider-status").textContent=c.opensubtitles_configured?"OpenSubtitles is configured.":"OpenSubtitles is not configured.";}catch(e){message.textContent="Could not save settings: "+e.message;}finally{button.disabled=false;}});
+async function loadProviderSettings(){try{const r=await fetch("/api/settings/opensubtitles"),s=await r.json();if(!r.ok)throw Error(s.detail||r.statusText);document.querySelector("#provider-status").textContent=s.configured?"OpenSubtitles is configured"+(s.has_account_credentials?" with account credentials.":" using the API-key allowance."):"OpenSubtitles is not configured yet.";document.querySelector("#provider-limit").value=s.max_candidates_per_file;document.querySelector("#provider-log-level").value=s.log_level||"INFO";}catch(e){document.querySelector("#provider-status").textContent="Could not load provider settings: "+e.message;}}
+document.querySelector("#provider-save").addEventListener("click",async()=>{const button=document.querySelector("#provider-save"),message=document.querySelector("#provider-message");button.disabled=true;message.textContent="Saving securely…";try{const r=await fetch("/api/settings/opensubtitles",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({api_key:document.querySelector("#provider-api-key").value,username:document.querySelector("#provider-username").value,password:document.querySelector("#provider-password").value,max_candidates_per_file:Number(document.querySelector("#provider-limit").value),log_level:document.querySelector("#provider-log-level").value,clear_account_credentials:document.querySelector("#provider-clear-account").checked})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);document.querySelector("#provider-api-key").value="";document.querySelector("#provider-username").value="";document.querySelector("#provider-password").value="";document.querySelector("#provider-clear-account").checked=false;message.textContent="Settings saved to the persistent data volume. "+(d.configured?"Provider is configured.":"");await loadProviderSettings();const c=await fetch("/api/config").then(x=>x.json());document.querySelector("#provider-status").textContent=c.opensubtitles_configured?"OpenSubtitles is configured.":"OpenSubtitles is not configured.";}catch(e){message.textContent="Could not save settings: "+e.message;}finally{button.disabled=false;}});
 document.querySelector("#provider-test").addEventListener("click",async()=>{const button=document.querySelector("#provider-test"),message=document.querySelector("#provider-message");button.disabled=true;message.textContent="Testing OpenSubtitles…";try{const r=await fetch("/api/settings/opensubtitles/test",{method:"POST"}),d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);message.textContent=d.message;}catch(e){message.textContent="Connection test failed: "+e.message;}finally{button.disabled=false;}});
 loadProviderSettings();
 fetch("/api/config").then(r=>r.json()).then(c=>{document.querySelector("#mode").textContent=c.test_mode?"TEST MODE":"LIVE MODE";}).catch(()=>{document.querySelector("#mode").textContent="unknown";});
@@ -288,8 +324,13 @@ def update_opensubtitles_settings(request: OpenSubtitlesSettingsRequest):
             username=request.username,
             password=request.password,
             max_candidates_per_file=request.max_candidates_per_file,
+            log_level=request.log_level,
             clear_account_credentials=request.clear_account_credentials,
         )
+        configure_logging(result["log_level"])
+        logger.info("logging_level_updated", extra={"event": "logging_level_updated",
+                    "phase": "configuration", "log_level": result["log_level"]})
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OSError as exc:
@@ -698,6 +739,11 @@ def scan(request: ScanRequest, background_tasks: BackgroundTasks):
                     paths.append(canonical)
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    logger.info(
+        "scan_inventory_completed",
+        extra={"event": "scan_inventory_completed", "phase": "discovery",
+               "provider_count": len(paths), "status": f"{len(paths)} supported MKV files across {len(roots)} selected folder(s)"},
+    )
     job = create_job("scan", total=len(paths), metadata={"scan_roots":[str(root.relative_to(media_root)) for root in roots]})
     background_tasks.add_task(_scan_worker, job["id"], media_root, paths)
     logger.info("scan_job_queued", extra={"event":"scan_job_queued","job_id":job["id"],
