@@ -239,6 +239,8 @@ input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-
 </section>
 <section class="panel"><h2>Media scan</h2><p>Browse the mounted media directory and select one or more folders to scan.</p><button id="browse-folders" class="secondary">Browse folders</button><button id="clear-folder-selection" class="secondary" type="button">Clear selection</button><div id="selected-folders" class="selected-folders"><span class="folder-chip">/media (default)</span></div><div id="folder-browser" class="folder-browser" hidden><div class="actions"><button id="folder-up" class="secondary" type="button">Up one level</button><button id="folder-select-current" class="secondary" type="button">Select this folder</button><button id="folder-close" class="secondary" type="button">Close</button></div><p id="folder-current" class="folder-path">/media</p><ul id="folder-list" class="folder-list"></ul><p id="folder-error" class="warning" aria-live="polite"></p></div><button id="scan">Start scan</button><button id="cancel-scan" class="secondary" type="button" hidden disabled>Cancel scan</button><p id="status">Ready.</p><div id="scan-results"></div><div id="job-progress" class="candidate" aria-live="polite">No active job.</div></section>
 <section class="panel"><div class="actions" style="justify-content:space-between;align-items:center"><div><h2>Subtitle candidate review</h2><p>Review candidates for the latest scan.</p></div><button id="clear-saved-data" class="secondary" type="button">Clear saved data</button></div><div class="batch-toolbar">
+<button id="select-all-candidates" class="secondary" type="button" disabled>Select all eligible</button>
+<button id="clear-candidate-selection" class="secondary" type="button" disabled>Clear selection</button>
 <button id="batch-approve" disabled>Approve selected</button>
 <button id="batch-inject" class="secondary" disabled>Inject approved selected</button>
 <span id="batch-selection-count" aria-live="polite">0 candidates selected</span>
@@ -269,6 +271,26 @@ function updateBatchControls() {
         count + (count === 1 ? " candidate selected" : " candidates selected");
     document.querySelector("#batch-approve").disabled = count === 0;
     document.querySelector("#batch-inject").disabled = count === 0;
+    const selectable = candidateList.querySelectorAll(".candidate-select input[type='checkbox']");
+    document.querySelector("#select-all-candidates").disabled =
+        selectable.length === 0 || count === selectable.length;
+    document.querySelector("#clear-candidate-selection").disabled = count === 0;
+}
+
+function selectAllCandidates() {
+    const checkboxes = candidateList.querySelectorAll(".candidate-select input[type='checkbox']");
+    for (const checkbox of checkboxes) {
+        checkbox.checked = true;
+        selectedCandidateIds.add(Number(checkbox.value));
+    }
+    updateBatchControls();
+}
+
+function clearCandidateSelection() {
+    const checkboxes = candidateList.querySelectorAll(".candidate-select input[type='checkbox']");
+    for (const checkbox of checkboxes) checkbox.checked = false;
+    selectedCandidateIds.clear();
+    updateBatchControls();
 }
 
 function renderCandidates(items) {
@@ -357,7 +379,11 @@ function renderCandidates(items) {
         }
         candidateList.append(card);
     }
+    updateBatchControls();
 }
+
+document.querySelector("#select-all-candidates").addEventListener("click", selectAllCandidates);
+document.querySelector("#clear-candidate-selection").addEventListener("click", clearCandidateSelection);
 
 async function runBatch(action) {
     const ids = [...selectedCandidateIds];
