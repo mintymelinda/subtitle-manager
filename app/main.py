@@ -104,6 +104,13 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
             relative_media_path, stat_result.st_size, stat_result.st_mtime, candidate
         )
         status = row["status"]
+        logger.debug(
+            "subtitle_candidate_persisted",
+            extra={"event": "subtitle_candidate_persisted",
+                   "candidate_id": row["id"], "media_path": relative_media_path,
+                   "phase": "candidate_selection", "status": status,
+                   "file_name": candidate["file_name"], "file_id": candidate["file_id"]},
+        )
         assessment = {
             "content_status": row.get("content_status", "unknown"),
             "content_language": row.get("content_language"),
@@ -652,6 +659,12 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path]):
                 phase = "inspected"
                 if details["has_verified_english_subtitle"]:
                     summary["status"] = "verified_english_present"
+                    logger.info(
+                        "candidate_discovery_skipped",
+                        extra={"event": "candidate_discovery_skipped",
+                               "job_id": job_id, "media_path": media_relative_path,
+                               "phase": "discovery", "filter_reason": "verified_english_subtitle_present"},
+                    )
                 elif client is not None and get_job(job_id)["status"] == "running":
                     phase = "discovery"
                     update_job_progress(job_id, phase=phase, current_file=media_relative_path)
@@ -662,6 +675,13 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path]):
                         logger.warning("opensubtitles_search_failed", extra={"event":"opensubtitles_search_failed","job_id":job_id,"media_path":media_relative_path,"phase":"discovery","error_type":type(exc).__name__})
                         summary = {"status":"provider_error","found":0,"staged":0,
                                    "candidates":[],"error":str(exc)}
+                elif client is None:
+                    logger.info(
+                        "candidate_discovery_skipped",
+                        extra={"event": "candidate_discovery_skipped",
+                               "job_id": job_id, "media_path": media_relative_path,
+                               "phase": "discovery", "filter_reason": "provider_not_configured"},
+                    )
                 record_job_item(job_id, media_path=media_relative_path, status="completed",
                                 phase=phase, details={"candidate_status":summary["status"],
                                 "candidates_found":summary["found"],"candidates_staged":summary["staged"]})
