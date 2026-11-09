@@ -98,3 +98,7 @@ python -m compileall -q app tests
 python -m unittest discover -s tests -v
 docker build -t subtitle-manager:test .
 ```
+
+## License
+
+Subtitle Manager is distributed under the [MIT License](LICENSE). The license permits use, modification, and redistribution, including commercial use, provided the copyright and license notice are retained. Contributions remain subject to their respective authors' rights.
