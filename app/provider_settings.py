@@ -22,7 +22,10 @@ def load_provider_settings() -> dict[str, Any]:
                     "username": str(value.get("username") or ""),
                     "password": str(value.get("password") or ""),
                     "max_candidates_per_file": max(1, min(5, int(value.get("max_candidates_per_file", 2)))),
-                    "log_level": str(value.get("log_level") or "INFO").upper(),
+                    "log_level": (str(value.get("log_level") or "INFO").upper()
+                                  if str(value.get("log_level") or "INFO").upper()
+                                  in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+                                  else "INFO"),
                 }
         except (OSError, ValueError, TypeError):
             raise RuntimeError("Saved OpenSubtitles settings could not be read. Check the persistent settings file.")
