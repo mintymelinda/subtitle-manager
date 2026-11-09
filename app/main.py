@@ -16,7 +16,7 @@ from app.database import (
     get_candidate, claim_candidate_patch, finish_candidate_patch, recover_interrupted_patches,
     create_job, start_job, update_job_progress, record_job_item, finish_job,
     get_job, list_jobs, recover_interrupted_jobs, clear_pending_review_queue, clear_saved_data,
-    list_media_files, record_media_patch,
+    list_media_files, record_media_patch, reset_candidate_reviews_for_media,
 )
 from app.media import inspect_media
 from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError, assess_subtitle_payload
@@ -794,7 +794,6 @@ def candidates(all: bool = False):
     output = [{key: row.get(key) for key in fields} for row in visible_rows]
     if all:
         visible_paths = {row["media_relative_path"] for row in output}
-        candidate_paths = {row["media_relative_path"] for row in rows}
         root = Path(settings.media_root).resolve()
         for media in list_media_files():
             path = media["relative_path"]
@@ -860,15 +859,20 @@ def edit_scanned_media(request: MediaEditRequest):
         result = patch_mkv(source, None, approved=True, test_mode=settings.test_mode,
             expected_size=media["size"], expected_mtime=media["modified_at"], keep_subtitle_indices=indices)
         record_media_patch(relative.as_posix(), "patched", result, result.get("backup"))
+        details = inspect_media(source)
+        stat_result = source.stat()
+        record_scan(relative.as_posix(), stat_result.st_size, stat_result.st_mtime, details)
+        reset_candidate_reviews_for_media(relative.as_posix())
         reprocess_result = None
         if not indices and request.reprocess_if_empty:
-            details = inspect_media(source)
-            stat_result = source.stat()
-            record_scan(relative.as_posix(), stat_result.st_size, stat_result.st_mtime, details)
             provider = load_provider_settings()
             if provider["api_key"]:
-                client = OpenSubtitlesClient(provider["api_key"], provider["username"], provider["password"])
-                reprocess_result = stage_candidates(client, source, media_root, stat_result, details.get("metadata") or {}, languages)
+                try:
+                    client = OpenSubtitlesClient(provider["api_key"], provider["username"], provider["password"])
+                    reprocess_result = stage_candidates(client, source, media_root, stat_result,
+                        details.get("metadata") or {}, languages)
+                except OpenSubtitlesError as match_error:
+                    reprocess_result = {"status": "provider_error", "error": str(match_error)}
             else:
                 reprocess_result = {"status": "not_configured", "found": 0, "staged": 0}
         record_job_item(job["id"], media_path=relative.as_posix(), status="completed",
