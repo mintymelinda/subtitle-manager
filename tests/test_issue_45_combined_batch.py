@@ -6,7 +6,7 @@ class CombinedBatchInjectionTests(unittest.TestCase):
     def test_dashboard_has_one_combined_batch_action(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
         self.assertIn('id="batch-run"', source)
-        self.assertIn("Approve & inject selected", source)
+        self.assertIn("Approve & patch selected", source)
         self.assertNotIn('id="batch-approve"', source)
         self.assertNotIn('id="batch-inject"', source)
 
