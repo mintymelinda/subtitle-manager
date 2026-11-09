@@ -11,7 +11,8 @@ from app.database import (
     set_candidate_decision, get_candidate,
 )
 from app.main import (
-    InjectRequest, MediaEditRequest, candidates, dashboard, edit_scanned_media, inject_candidate,
+    InjectRequest, MediaEditRequest, candidates, clear_data, dashboard,
+    edit_scanned_media, inject_candidate,
 )
 
 
@@ -55,6 +56,41 @@ class InjectionApiSafetyTests(unittest.TestCase):
         settings.subtitle_staging_path = self.old["subtitle_staging_path"]
         settings.test_mode = self.old["test_mode"]
         self.temp.cleanup()
+
+    def test_clear_saved_data_also_removes_media_bak_files_without_following_symlinks(self):
+        nested = self.media_root / "nested"
+        nested.mkdir()
+        backups = [
+            self.media_root / "old-version.bak",
+            nested / ".movie.mkv.recovery-old.bak",
+        ]
+        for backup in backups:
+            backup.write_bytes(b"backup")
+        keep = nested / "notes.txt"
+        keep.write_text("keep", encoding="utf-8")
+
+        outside = self.root / "outside"
+        outside.mkdir()
+        outside_backup = outside / "outside.bak"
+        outside_backup.write_bytes(b"outside")
+        (self.media_root / "linked-backup.bak").symlink_to(outside_backup)
+        (self.media_root / "linked-directory").symlink_to(outside, target_is_directory=True)
+
+        result = clear_data()
+
+        self.assertEqual(result["backup_files_removed"], 2)
+        self.assertEqual(result["backup_files_failed"], 0)
+        self.assertTrue(all(not backup.exists() for backup in backups))
+        self.assertTrue(keep.exists())
+        self.assertTrue(outside_backup.exists())
+        self.assertTrue((self.media_root / "linked-backup.bak").is_symlink())
+        self.assertTrue((self.media_root / "linked-directory").is_symlink())
+
+    def test_clear_data_dashboard_explains_backup_cleanup(self):
+        html = dashboard().body.decode("utf-8")
+        self.assertIn("Clear saved data &amp; caches", html)
+        self.assertIn(".bak backup files under /media", html)
+        self.assertIn("d.backup_files_removed", html)
 
     def test_injection_requires_second_confirmation(self):
         set_candidate_decision(self.candidate_id, "approved")
