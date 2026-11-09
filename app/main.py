@@ -209,6 +209,16 @@ button:disabled{opacity:.5;cursor:not-allowed}.notice{border-left:4px solid #eab
 .candidate{background:#111827;border:1px solid #374151;border-radius:10px;padding:.65rem .8rem;margin:.5rem 0;min-width:0}
 .candidate h3,.candidate p{overflow-wrap:anywhere}.candidate h3{margin:.2rem 0 .4rem}.candidate p{margin:.25rem 0}
 #candidate-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:.35rem}
+.candidate-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:.75rem}
+.candidate-title{min-width:0}.candidate-title h3{margin:.1rem 0 .2rem}
+.candidate-media-path{font-size:.82rem;color:#9ca3af;margin:.1rem 0;overflow-wrap:anywhere}
+.candidate-select{display:flex;align-items:center;gap:.35rem;white-space:nowrap;font-size:.9rem}
+.candidate-select input{width:auto;margin:0}
+.candidate-details{margin:.55rem 0;color:#cbd5e1}
+.candidate-details summary{cursor:pointer;color:#93c5fd}
+.batch-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:.65rem;margin:.5rem 0 1rem}
+.batch-toolbar button:disabled{opacity:.45}
+#batch-selection-count{color:#aebbd0;font-size:.9rem}
 .actions{display:flex;flex-wrap:wrap;gap:.8rem;margin-top:.65rem}
 .actions a{color:#93c5fd;padding:.5rem 0}.secondary{background:#4b5563}.warning{color:#fbbf24}
 input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-radius:8px;border:1px solid #64748b;background:#111827;color:#e5e7eb}
@@ -228,7 +238,13 @@ input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-
 <p id="provider-message" aria-live="polite"></p>
 </section>
 <section class="panel"><h2>Media scan</h2><p>Browse the mounted media directory and select one or more folders to scan.</p><button id="browse-folders" class="secondary">Browse folders</button><button id="clear-folder-selection" class="secondary" type="button">Clear selection</button><div id="selected-folders" class="selected-folders"><span class="folder-chip">/media (default)</span></div><div id="folder-browser" class="folder-browser" hidden><div class="actions"><button id="folder-up" class="secondary" type="button">Up one level</button><button id="folder-select-current" class="secondary" type="button">Select this folder</button><button id="folder-close" class="secondary" type="button">Close</button></div><p id="folder-current" class="folder-path">/media</p><ul id="folder-list" class="folder-list"></ul><p id="folder-error" class="warning" aria-live="polite"></p></div><button id="scan">Start scan</button><button id="cancel-scan" class="secondary" type="button" hidden disabled>Cancel scan</button><p id="status">Ready.</p><div id="scan-results"></div><div id="job-progress" class="candidate" aria-live="polite">No active job.</div></section>
-<section class="panel"><div class="actions" style="justify-content:space-between;align-items:center"><div><h2>Subtitle candidate review</h2><p>Review candidates for the latest scan.</p></div><button id="clear-saved-data" class="secondary" type="button">Clear saved data</button></div><div id="candidate-list">Loading saved candidates…</div><p id="clear-data-message" aria-live="polite"></p></section>
+<section class="panel"><div class="actions" style="justify-content:space-between;align-items:center"><div><h2>Subtitle candidate review</h2><p>Review candidates for the latest scan.</p></div><button id="clear-saved-data" class="secondary" type="button">Clear saved data</button></div><div class="batch-toolbar">
+<button id="batch-approve" disabled>Approve selected</button>
+<button id="batch-inject" class="secondary" disabled>Inject approved selected</button>
+<span id="batch-selection-count" aria-live="polite">0 candidates selected</span>
+</div>
+<p id="batch-message" aria-live="polite"></p>
+<div id="candidate-list">Loading saved candidates…</div><p id="clear-data-message" aria-live="polite"></p></section>
 <script>
 const scanButton=document.querySelector("#scan"),cancelScanButton=document.querySelector("#cancel-scan"),status=document.querySelector("#status"),scanResults=document.querySelector("#scan-results"),candidateList=document.querySelector("#candidate-list");
 let activeScanJobId=null;let activeTrackedJobId=null;
@@ -236,16 +252,189 @@ function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefine
 function line(parent,label,value){const p=el("p");p.append(el("strong",label+": "),document.createTextNode(value===null||value===undefined?"Unknown":String(value)));parent.append(p);}
 function streams(value){if(!Array.isArray(value)||!value.length)return "";return value.map(s=>[s.codec,s.language,s.title].filter(Boolean).join(" · ")||JSON.stringify(s)).join("; ");}
 async function loadCandidates(){const r=await fetch("/api/candidates");const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);renderCandidates(d.candidates);}
-function renderCandidates(items){candidateList.replaceChildren();if(!items.length){candidateList.append(el("p","No saved candidates yet. Run a scan with OpenSubtitles configured."));return;}
-for(const c of items){const card=el("article",undefined,"candidate");card.append(el("h3",c.media_relative_path));card.append(el("p","Candidate #"+c.id+" · "+c.file_name));line(card,"Provider language / format",c.language+" / "+c.format);line(card,"Release",c.release||"Not provided");line(card,"Match score",c.match_score);line(card,"Exact file hash match",c.moviehash_match?"Yes":"No");line(card,"Candidate download status",c.status);line(card,"Match rationale",(c.match_reasons||[]).join("; ")||"No rationale supplied");line(card,"Content check",c.content_status+(c.content_language?" · "+c.content_language:"")+(c.content_language_confidence?" · confidence "+Number(c.content_language_confidence).toFixed(2):""));line(card,"Existing audio tracks",streams(c.inspection?.audio_streams));line(card,"Existing subtitle tracks",streams(c.inspection?.subtitle_streams));
-if(c.is_stale)card.append(el("p","This candidate is stale: the media file changed after discovery. Rescan before reviewing.","warning"));
-card.append(el("p","Review decision: "+c.review_decision+(c.review_updated_at?" · "+c.review_updated_at:"")));
-line(card,"Injection status",c.patch_status||"not_started");
-if(c.patch_status==="interrupted")card.append(el("p","An earlier injection was interrupted. Inspect the media file and retained recovery copy manually before proceeding.","warning"));
-if(c.status==="staged"){const links=el("div",undefined,"actions"),preview=el("a","Preview subtitle"),download=el("a","Download candidate");preview.href="/api/candidates/"+c.id+"/preview";preview.target="_blank";preview.rel="noopener";download.href="/api/candidates/"+c.id+"/download";links.append(preview,download);card.append(links);}else if(c.last_error){card.append(el("p",c.last_error,"warning"));}
-if(c.status==="staged"&&c.review_decision==="pending"&&!c.is_stale){const actions=el("div",undefined,"actions"),approve=el("button","Approve & inject"),reject=el("button","Reject this candidate");reject.className="secondary";approve.addEventListener("click",()=>decide(c.id,"approved",approve));reject.addEventListener("click",()=>decide(c.id,"rejected",reject));actions.append(approve,reject);card.append(actions);}
-if(c.status==="staged"&&c.review_decision==="approved"&&!c.is_stale&&c.patch_status!=="patched"&&c.patch_status!=="running"&&c.patch_status!=="interrupted"){const injectButton=el("button",c.patch_status==="failed"?"Retry injection":"Inject approved subtitle");injectButton.addEventListener("click",()=>inject(c.id,injectButton));card.append(injectButton);}
-candidateList.append(card);}}
+const selectedCandidateIds = new Set();
+
+function eligibleForBatch(candidate) {
+    return candidate.status === "staged"
+        && !candidate.is_stale
+        && candidate.patch_status !== "patched"
+        && candidate.patch_status !== "running"
+        && candidate.patch_status !== "interrupted"
+        && ["pending", "approved"].includes(candidate.review_decision);
+}
+
+function updateBatchControls() {
+    const count = selectedCandidateIds.size;
+    document.querySelector("#batch-selection-count").textContent =
+        count + (count === 1 ? " candidate selected" : " candidates selected");
+    document.querySelector("#batch-approve").disabled = count === 0;
+    document.querySelector("#batch-inject").disabled = count === 0;
+}
+
+function renderCandidates(items) {
+    candidateList.replaceChildren();
+    selectedCandidateIds.clear();
+    updateBatchControls();
+    if (!items.length) {
+        candidateList.append(el("p", "No saved candidates yet. Run a scan with OpenSubtitles configured."));
+        return;
+    }
+
+    for (const c of items) {
+        const card = el("article", undefined, "candidate");
+        const heading = el("div", undefined, "candidate-heading");
+        const title = el("div", undefined, "candidate-title");
+        title.append(el("h3", c.file_name));
+        title.append(el("p", c.media_relative_path, "candidate-media-path"));
+        heading.append(title);
+
+        if (eligibleForBatch(c)) {
+            const label = el("label", undefined, "candidate-select");
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.value = String(c.id);
+            checkbox.setAttribute("aria-label", "Select " + c.file_name);
+            checkbox.addEventListener("change", () => {
+                if (checkbox.checked) selectedCandidateIds.add(c.id);
+                else selectedCandidateIds.delete(c.id);
+                updateBatchControls();
+            });
+            label.append(checkbox, document.createTextNode("Select"));
+            heading.append(label);
+        }
+        card.append(heading);
+        card.append(el("p", "Candidate #" + c.id + " · " + c.language + " / " + c.format));
+        card.append(el("p", "Review: " + c.review_decision + " · Injection: " + (c.patch_status || "not_started")));
+
+        const details = document.createElement("details");
+        details.className = "candidate-details";
+        const summary = document.createElement("summary");
+        summary.textContent = "Matching details";
+        details.append(summary);
+        line(details, "Release", c.release || "Not provided");
+        line(details, "Match score", c.match_score);
+        line(details, "Exact file hash match", c.moviehash_match ? "Yes" : "No");
+        line(details, "Candidate download status", c.status);
+        line(details, "Match rationale", (c.match_reasons || []).join("; ") || "No rationale supplied");
+        line(details, "Content check", c.content_status + (c.content_language ? " · " + c.content_language : "") + (c.content_language_confidence ? " · confidence " + Number(c.content_language_confidence).toFixed(2) : ""));
+        line(details, "Existing audio tracks", streams(c.inspection?.audio_streams));
+        line(details, "Existing subtitle tracks", streams(c.inspection?.subtitle_streams));
+        card.append(details);
+
+        if (c.is_stale) card.append(el("p", "This candidate is stale: the media file changed after discovery. Rescan before reviewing.", "warning"));
+        if (c.patch_status === "interrupted") card.append(el("p", "An earlier injection was interrupted. Inspect the media file and retained recovery copy manually before proceeding.", "warning"));
+
+        if (c.status === "staged") {
+            const links = el("div", undefined, "actions");
+            const preview = el("a", "Preview subtitle");
+            const download = el("a", "Download candidate");
+            preview.href = "/api/candidates/" + c.id + "/preview";
+            preview.target = "_blank";
+            preview.rel = "noopener";
+            download.href = "/api/candidates/" + c.id + "/download";
+            links.append(preview, download);
+            card.append(links);
+        } else if (c.last_error) {
+            card.append(el("p", c.last_error, "warning"));
+        }
+
+        if (c.status === "staged" && c.review_decision === "pending" && !c.is_stale) {
+            const actions = el("div", undefined, "actions");
+            const approve = el("button", "Approve & inject");
+            const reject = el("button", "Reject this candidate");
+            reject.className = "secondary";
+            approve.addEventListener("click", () => decide(c.id, "approved", approve));
+            reject.addEventListener("click", () => decide(c.id, "rejected", reject));
+            actions.append(approve, reject);
+            card.append(actions);
+        }
+        if (c.status === "staged" && c.review_decision === "approved" && !c.is_stale
+            && c.patch_status !== "patched" && c.patch_status !== "running"
+            && c.patch_status !== "interrupted") {
+            const injectButton = el("button", c.patch_status === "failed" ? "Retry injection" : "Inject approved subtitle");
+            injectButton.addEventListener("click", () => inject(c.id, injectButton));
+            card.append(injectButton);
+        }
+        candidateList.append(card);
+    }
+}
+
+async function runBatch(action) {
+    const ids = [...selectedCandidateIds];
+    if (!ids.length) return;
+    const label = action === "approve" ? "Approve the selected candidates?" : "Inject all selected candidates that are already approved?";
+    const mode = document.querySelector("#mode").textContent;
+    const warning = action === "inject"
+        ? (mode === "TEST MODE"
+            ? " TEST MODE will replace each selected MKV and retain recovery copies."
+            : " LIVE MODE will replace each selected MKV; recovery copies are deleted only after verification.")
+        : " Approval does not modify media; injection is a separate action.";
+    if (!confirm(label + warning)) return;
+
+    const approveButton = document.querySelector("#batch-approve");
+    const injectButton = document.querySelector("#batch-inject");
+    approveButton.disabled = true;
+    injectButton.disabled = true;
+    const message = document.querySelector("#batch-message");
+    let succeeded = 0;
+    const failures = [];
+    let candidatesById;
+    try {
+        const response = await fetch("/api/candidates");
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || response.statusText);
+        candidatesById = new Map(payload.candidates.map(candidate => [candidate.id, candidate]));
+    } catch (error) {
+        message.textContent = "Could not load selected candidates: " + error.message;
+        approveButton.disabled = false;
+        injectButton.disabled = false;
+        return;
+    }
+
+    for (const id of ids) {
+        try {
+            const candidate = candidatesById.get(id);
+            if (!candidate) throw new Error("Candidate is no longer available.");
+            if (action === "approve") {
+                if (candidate.review_decision === "approved") {
+                    succeeded++;
+                    continue;
+                }
+                const response = await fetch("/api/candidates/" + id + "/decision", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({decision: "approved"})
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail || response.statusText);
+                succeeded++;
+            } else {
+                if (candidate.review_decision !== "approved") {
+                    throw new Error("Approve this candidate before batch injection.");
+                }
+                const response = await fetch("/api/candidates/" + id + "/inject", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({confirm: true})
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail || response.statusText);
+                if (result.job_id) trackJob(result.job_id);
+                succeeded++;
+            }
+        } catch (error) {
+            failures.push("Candidate #" + id + ": " + error.message);
+        }
+    }
+
+    message.textContent = succeeded + " completed; " + failures.length + " failed."
+        + (failures.length ? " " + failures.join(" | ") : "");
+    await loadCandidates();
+}
+
+document.querySelector("#batch-approve").addEventListener("click", () => runBatch("approve"));
+document.querySelector("#batch-inject").addEventListener("click", () => runBatch("inject"));
+
 async function decide(id,decision,button){
 const mode=document.querySelector("#mode").textContent;
 const approvalMessage=decision==="approved"

@@ -34,7 +34,7 @@ class PendingApprovalQueueTests(unittest.TestCase):
         self.assertNotIn('fetch("/api/media")', source)
         self.assertNotIn('def scanned_media():', source)
         self.assertIn('row.get("review_decision") == "pending"', source)
-        self.assertIn('el("button","Approve & inject")', source)
+        self.assertIn('el("button", "Approve & inject")', source)
 
     def test_approval_action_requires_explicit_injection_confirmation(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
