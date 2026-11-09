@@ -319,7 +319,7 @@ def get_opensubtitles_settings():
 @app.post("/api/settings/opensubtitles")
 def update_opensubtitles_settings(request: OpenSubtitlesSettingsRequest):
     try:
-        return save_provider_settings(
+        result = save_provider_settings(
             api_key=request.api_key,
             username=request.username,
             password=request.password,
