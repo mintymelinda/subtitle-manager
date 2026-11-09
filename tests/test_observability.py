@@ -26,18 +26,17 @@ class ObservabilityTests(unittest.TestCase):
     def test_json_formatter_includes_candidate_diagnostics_and_redacts_secrets(self):
         record = logging.LogRecord(
             "subtitle_manager", logging.DEBUG, __file__, 1,
-            "candidate filtered", (), None,
+            "candidate filtered api_key=must-not-appear", (), None,
         )
         record.event = "opensubtitles_candidate_filtered"
         record.phase = "candidate_selection"
         record.filter_reason = "unsupported_language"
         record.provider_count = 13
-        record.api_key = "must-not-appear"
         payload = json.loads(JsonFormatter().format(record))
         self.assertEqual(payload["filter_reason"], "unsupported_language")
         self.assertEqual(payload["provider_count"], 13)
-        self.assertEqual(payload["api_key"], "[REDACTED]")
         self.assertNotIn("must-not-appear", json.dumps(payload))
+        self.assertIn("api_key=[REDACTED]", payload["message"])
 
 
 if __name__ == "__main__":
