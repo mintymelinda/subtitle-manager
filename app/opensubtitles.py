@@ -230,7 +230,10 @@ class OpenSubtitlesClient:
         metadata = metadata or {}
         title = str(metadata.get("title") or "").strip()
         year = str(metadata.get("year") or "").strip()
-        query = " ".join(part for part in (title, year) if part) or filename_query(media_path)
+        # OpenSubtitles recommends searching by the actual filename alongside
+        # the movie hash. Container titles often contain only a TV series name,
+        # which drops the season/episode/release details and can return no match.
+        query = filename_query(media_path)
         params: dict[str, Any] = {"languages": "en", "query": query}
         moviehash = compute_moviehash(media_path)
         if moviehash:
