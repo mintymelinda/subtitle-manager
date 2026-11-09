@@ -27,6 +27,7 @@ class ProviderSettingsTests(unittest.TestCase):
         self.assertTrue(result["configured"])
         self.assertTrue(result["has_account_credentials"])
         self.assertEqual(result["max_candidates_per_file"], 4)
+        self.assertEqual(result["log_level"], "INFO")
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(provider_settings.load_provider_settings()["api_key"], "secret-key")
 
@@ -70,6 +71,34 @@ class ProviderSettingsTests(unittest.TestCase):
         saved = provider_settings.load_provider_settings()
         self.assertEqual(saved["username"], "")
         self.assertEqual(saved["password"], "")
+
+    def test_logging_level_persists_and_is_returned_publicly(self):
+        result = provider_settings.save_provider_settings(
+            api_key="secret-key", username="", password="",
+            max_candidates_per_file=2, log_level="DEBUG",
+        )
+        self.assertEqual(result["log_level"], "DEBUG")
+        self.assertEqual(provider_settings.load_provider_settings()["log_level"], "DEBUG")
+
+    def test_logging_level_can_be_saved_before_provider_is_configured(self):
+        result = provider_settings.save_provider_settings(
+            api_key="", username="", password="",
+            max_candidates_per_file=2, log_level="DEBUG",
+        )
+        self.assertFalse(result["configured"])
+        self.assertEqual(result["log_level"], "DEBUG")
+
+    def test_invalid_logging_level_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Logging level must be"):
+            provider_settings.save_provider_settings(
+                api_key="secret-key", username="", password="",
+                max_candidates_per_file=2, log_level="TRACE",
+            )
+
+    def test_invalid_saved_logging_level_falls_back_to_info(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({"api_key": "secret-key", "log_level": "TRACE"}))
+        self.assertEqual(provider_settings.load_provider_settings()["log_level"], "INFO")
 
     def test_public_settings_never_expose_secrets(self):
         provider_settings.save_provider_settings(

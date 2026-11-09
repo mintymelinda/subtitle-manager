@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import re
 
+from app.observability import logger
+
 from langdetect import DetectorFactory, detect_langs
 from langdetect.lang_detect_exception import LangDetectException
 import struct
@@ -260,21 +262,48 @@ class OpenSubtitlesClient:
                 else:
                     params["imdb_id"] = imdb_id
         result = self._json_request("/subtitles", params=params)
+        provider_items = result.get("data", [])
         candidates: list[dict[str, Any]] = []
-        for item in result.get("data", []):
+        filtered: dict[str, int] = {}
+        logger.debug(
+            "opensubtitles_provider_results",
+            extra={"event": "opensubtitles_provider_results", "media_path": str(media_path),
+                   "phase": "candidate_selection", "provider_count": len(provider_items)},
+        )
+
+        def filtered_result(reason: str, **details) -> None:
+            filtered[reason] = filtered.get(reason, 0) + 1
+            logger.debug(
+                "opensubtitles_candidate_filtered reason=%s", reason,
+                extra={"event": "opensubtitles_candidate_filtered",
+                       "media_path": str(media_path), "phase": "candidate_selection",
+                       "filter_reason": reason, **details},
+            )
+
+        for item in provider_items:
             attributes = item.get("attributes") or {}
-            if str(attributes.get("language", "")).lower() not in {"en", "eng"}:
+            language = str(attributes.get("language", "")).lower()
+            if language not in {"en", "eng"}:
+                filtered_result("unsupported_language", language=language or "missing")
                 continue
             if attributes.get("machine_translated"):
+                filtered_result("machine_translated")
                 continue
             score, reasons = rank_candidate(attributes, media_path.stem)
-            for subtitle_file in attributes.get("files") or []:
+            files = attributes.get("files") or []
+            if not files:
+                filtered_result("no_files")
+                continue
+            for subtitle_file in files:
                 file_name = str(subtitle_file.get("file_name") or "")
                 extension = Path(file_name).suffix.lower()
                 if extension not in SUPPORTED_EXTENSIONS:
+                    filtered_result("unsupported_format", file_name=Path(file_name).name,
+                                    file_count=len(files))
                     continue
                 file_id = subtitle_file.get("file_id")
                 if not file_id:
+                    filtered_result("missing_file_id", file_name=Path(file_name).name)
                     continue
                 candidates.append({
                     "subtitle_id": attributes.get("subtitle_id") or item.get("id"),
@@ -293,12 +322,37 @@ class OpenSubtitlesClient:
                     "match_score": score,
                     "match_reasons": reasons,
                 })
+                logger.debug(
+                    "opensubtitles_candidate_accepted file=%s", Path(file_name).name,
+                    extra={"event": "opensubtitles_candidate_accepted",
+                           "media_path": str(media_path), "phase": "candidate_selection",
+                           "file_name": Path(file_name).name, "file_id": int(file_id),
+                           "language": language, "match_score": score,
+                           "match_reasons": reasons,
+                           "moviehash_match": bool(attributes.get("moviehash_match")),
+                           "download_count": int(attributes.get("download_count") or 0)},
+                )
         candidates.sort(
             key=lambda item: (
                 item["moviehash_match"], item["match_score"], item["download_count"]
             ),
             reverse=True,
         )
+        logger.info(
+            "opensubtitles_candidate_selection_summary provider_count=%d accepted_count=%d filtered_count=%d",
+            len(provider_items), len(candidates), sum(filtered.values()),
+            extra={"event": "opensubtitles_candidate_selection_summary",
+                   "media_path": str(media_path), "phase": "candidate_selection",
+                   "provider_count": len(provider_items), "accepted_count": len(candidates),
+                   "filtered_count": sum(filtered.values())},
+        )
+        for reason, count in sorted(filtered.items()):
+            logger.debug(
+                "opensubtitles_candidate_filter_summary",
+                extra={"event": "opensubtitles_candidate_filter_summary",
+                       "media_path": str(media_path), "phase": "candidate_selection",
+                       "filter_reason": reason, "filtered_count": count},
+            )
         return candidates
 
     def download(self, file_id: int) -> tuple[str, bytes, int | None]:

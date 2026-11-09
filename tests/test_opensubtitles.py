@@ -111,10 +111,18 @@ class OpenSubtitlesTests(unittest.TestCase):
             path = Path(directory) / "The.Matrix.1999.mkv"
             path.write_bytes(bytes(128 * 1024))
             client = OpenSubtitlesClient("test-secret", opener=opener, sleeper=lambda _s: None)
-            results = client.search(path, {"title": "The Matrix", "year": "1999", "imdb_id": "tt0133093"})
+            with self.assertLogs("subtitle_manager", level="DEBUG") as captured_logs:
+                results = client.search(path, {"title": "The Matrix", "year": "1999", "imdb_id": "tt0133093"})
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["file_id"], 2)
+        diagnostic_output = "\\n".join(captured_logs.output)
+        self.assertIn("opensubtitles_candidate_filtered", diagnostic_output)
+        self.assertIn("unsupported_language", diagnostic_output)
+        self.assertIn("machine_translated", diagnostic_output)
+        self.assertIn("unsupported_format", diagnostic_output)
+        self.assertIn("opensubtitles_candidate_accepted", diagnostic_output)
+        self.assertIn("accepted_count", diagnostic_output)
         self.assertTrue(results[0]["moviehash_match"])
         query = urllib.parse.urlparse(captured[0].full_url).query
         self.assertEqual(query, "imdb_id=133093&languages=en&moviehash=0000000000020000&query=the+matrix+1999")
