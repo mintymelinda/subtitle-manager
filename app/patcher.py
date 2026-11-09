@@ -3,6 +3,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -34,7 +35,36 @@ def _english(stream: dict) -> bool:
     return language in {"en", "eng", "english"}
 
 
-def _validate_streams(before: dict, after: dict) -> None:
+def _subtitle_has_content(path: Path, stream: dict) -> bool:
+    """Require real subtitle packets, and visible cue text for text codecs."""
+    stream_index = stream.get("index")
+    if stream_index is None:
+        raise RuntimeError("Validation failed: added subtitle stream has no index")
+    packets = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", str(stream_index),
+         "-show_packets", "-show_entries", "packet=size", "-of", "json", str(path)],
+        check=True, capture_output=True, text=True, timeout=90,
+    )
+    packet_data = json.loads(packets.stdout or "{}").get("packets", [])
+    if not any(int(packet.get("size") or 0) > 0 for packet in packet_data):
+        return False
+
+    codec = str(stream.get("codec_name") or "").lower()
+    if codec in {"subrip", "ass", "ssa", "webvtt", "mov_text", "text"}:
+        decoded = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(path), "-map", f"0:{stream_index}",
+             "-f", "srt", "pipe:1"],
+            check=True, capture_output=True, text=True, timeout=90,
+        )
+        return bool(re.search(
+            r"(?m)^.*-->.*$\n(?:[^\n]*\S[^\n]*\n?)+",
+            decoded.stdout or "",
+        ))
+    # Bitmap subtitles cannot be validated as text without OCR.
+    return True
+
+
+def _validate_streams(before: dict, after: dict, output_path: Path) -> None:
     output_format = (after.get("format") or {}).get("format_name", "").lower()
     if "matroska" not in output_format:
         raise RuntimeError("Validation failed: output is not a Matroska container")
@@ -57,8 +87,11 @@ def _validate_streams(before: dict, after: dict) -> None:
         if match is None:
             raise RuntimeError("Validation failed: an existing subtitle stream was lost")
         remaining.pop(match)
-    if not any(_english(stream) for stream in remaining):
+    added_english = [stream for stream in remaining if _english(stream)]
+    if not added_english:
         raise RuntimeError("Validation failed: the added subtitle is not tagged English")
+    if not any(_subtitle_has_content(output_path, stream) for stream in added_english):
+        raise RuntimeError("Validation failed: the added English subtitle contains no subtitle cues")
 
 
 def _snapshot(path: Path) -> tuple:
@@ -150,7 +183,7 @@ def _patch_mkv_unlocked(source: Path, subtitle: Path, *, approved: bool, test_mo
             raise RuntimeError("MKVToolNix did not produce a valid working file")
 
         candidate = _probe(working)
-        _validate_streams(before, candidate)
+        _validate_streams(before, candidate, working)
         with working.open("rb") as handle:
             os.fsync(handle.fileno())
         _preserve_metadata(source, working)
@@ -165,7 +198,7 @@ def _patch_mkv_unlocked(source: Path, subtitle: Path, *, approved: bool, test_mo
 
         try:
             final = _probe(source)
-            _validate_streams(before, final)
+            _validate_streams(before, final, source)
             final_stat = source.stat()
             original_stat = backup.stat()
             if final_stat.st_mode & 0o7777 != original_stat.st_mode & 0o7777:

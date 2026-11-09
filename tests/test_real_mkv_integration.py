@@ -67,6 +67,17 @@ class RealMkvInjectionTests(unittest.TestCase):
                             for s in after_subs))
         self.assertIn("matroska", after.get("format", {}).get("format_name", ""))
 
+    def test_real_mkv_empty_subtitle_is_rejected_and_original_is_preserved(self):
+        self.new_subtitle.write_text("", encoding="utf-8")
+        stat = self.source.stat()
+        with self.assertRaisesRegex(RuntimeError, "contains no subtitle cues"):
+            patch_mkv(
+                self.source, self.new_subtitle, approved=True, test_mode=True,
+                expected_size=stat.st_size, expected_mtime=stat.st_mtime,
+            )
+        self.assertEqual(self.source.read_bytes(), self.original_bytes)
+        self.assertEqual(len(list(self.root.glob(".*.recovery-*.bak"))), 1)
+
     def test_real_mkv_injection_preserves_streams_and_test_mode_backup(self):
         stat = self.source.stat()
         result = patch_mkv(
