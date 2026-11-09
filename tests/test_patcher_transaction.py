@@ -1,12 +1,13 @@
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.patcher import patch_mkv
+from app.patcher import _validate_streams, patch_mkv
 
 
 def stream(kind, codec, language=None):
@@ -35,6 +36,8 @@ class TransactionalPatcherTests(unittest.TestCase):
         self.temp.cleanup()
 
     def fake_mux(self, command, **_kwargs):
+        if "-J" in command:
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"tracks": []}), stderr="")
         output = Path(command[command.index("-o") + 1])
         output.write_bytes(b"muxed media bytes")
 
@@ -43,6 +46,35 @@ class TransactionalPatcherTests(unittest.TestCase):
             "app.patcher._subtitle_has_content", return_value=has_content
         ), patch("app.patcher.subprocess.run", side_effect=self.fake_mux):
             return patch_mkv(self.source, self.subtitle, approved=True, test_mode=test_mode)
+
+    def test_validation_accepts_only_the_selected_existing_subtitle_tracks(self):
+        before = {"format": {"format_name": "matroska"}, "streams": [
+            stream("video", "h264"), stream("audio", "aac"),
+            {**stream("subtitle", "subrip", "fra"), "index": 2},
+            {**stream("subtitle", "ass", "jpn"), "index": 3},
+        ]}
+        after = {"format": {"format_name": "matroska"}, "streams": [
+            stream("video", "h264"), stream("audio", "aac"),
+            {**stream("subtitle", "subrip", "fra"), "index": 2},
+            {**stream("subtitle", "subrip", "eng"), "index": 3},
+        ]}
+        with patch("app.patcher._subtitle_has_content", return_value=True):
+            _validate_streams(before, after, self.source, [2])
+
+    def test_validation_rejects_existing_subtitle_tracks_marked_for_removal(self):
+        before = {"format": {"format_name": "matroska"}, "streams": [
+            stream("video", "h264"), stream("audio", "aac"),
+            {**stream("subtitle", "subrip", "fra"), "index": 2},
+            {**stream("subtitle", "ass", "jpn"), "index": 3},
+        ]}
+        after = {"format": {"format_name": "matroska"}, "streams": [
+            stream("video", "h264"), stream("audio", "aac"),
+            {**stream("subtitle", "subrip", "fra"), "index": 2},
+            {**stream("subtitle", "ass", "jpn"), "index": 3},
+            {**stream("subtitle", "subrip", "eng"), "index": 4},
+        ]}
+        with self.assertRaisesRegex(RuntimeError, "unexpected existing subtitle tracks"):
+            _validate_streams(before, after, self.source, [2])
 
     def test_test_mode_patches_one_file_and_retains_recovery_copy(self):
         result = self.run_patch([self.before, self.valid_after, self.valid_after])
