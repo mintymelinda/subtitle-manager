@@ -16,7 +16,7 @@ SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".sup", ".sub"}
 def _probe(path: Path) -> dict:
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries",
-         "format=format_name:stream=index,codec_type,codec_name,width,height,channels,sample_rate,channel_layout:stream_tags=language",
+         "format=format_name:stream=index,codec_type,codec_name,width,height,channels,sample_rate,channel_layout:stream_tags=language,language_ietf",
          "-of", "json", str(path)],
         check=True, capture_output=True, text=True, timeout=90
     )
