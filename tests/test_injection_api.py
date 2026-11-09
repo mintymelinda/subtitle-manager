@@ -10,7 +10,7 @@ from app.database import (
     initialize, record_scan, save_candidate, mark_candidate_staged,
     set_candidate_decision, get_candidate,
 )
-from app.main import InjectRequest, inject_candidate
+from app.main import (\n    InjectRequest, MediaEditRequest, candidates, edit_scanned_media, inject_candidate,\n)
 
 
 class InjectionApiSafetyTests(unittest.TestCase):
@@ -123,6 +123,61 @@ class InjectionApiSafetyTests(unittest.TestCase):
             self.assertEqual(error.exception.status_code, 400)
             patcher.assert_not_called()
 
+
+
+    def test_all_scanned_files_option_includes_non_candidate_inventory(self):
+        other = self.media_root / "other.mkv"
+        other.write_bytes(b"other scanned media")
+        stat = other.stat()
+        record_scan("other.mkv", stat.st_size, stat.st_mtime, {
+            "audio_streams": [{"index": 1, "codec": "aac"}],
+            "subtitle_streams": [{"index": 2, "codec": "subrip", "language": "fra"}],
+        })
+        default_result = candidates()
+        all_result = candidates(all=True)
+        self.assertNotIn("other.mkv", [item["media_relative_path"] for item in default_result["candidates"]])
+        scanned = next(item for item in all_result["candidates"] if item["media_relative_path"] == "other.mkv")
+        self.assertTrue(scanned["is_non_candidate"])
+        self.assertEqual(scanned["inspection"]["subtitle_streams"][0]["index"], 2)
+
+    def test_non_candidate_edit_uses_track_only_patcher_and_records_history(self):
+        other = self.media_root / "other.mkv"
+        other.write_bytes(b"other scanned media")
+        stat = other.stat()
+        inspection = {
+            "audio_streams": [{"index": 1, "codec": "aac"}],
+            "subtitle_streams": [{"index": 2, "codec": "subrip", "language": "fra"}],
+            "has_verified_english_subtitle": False,
+        }
+        record_scan("other.mkv", stat.st_size, stat.st_mtime, inspection)
+        with patch("app.main.patch_mkv", return_value={
+            "status": "patched", "backup": "/tmp/recovery.bak", "existing_tracks_only": True,
+        }) as patcher, patch("app.main.inspect_media", return_value=inspection):
+            result = edit_scanned_media(MediaEditRequest(
+                confirm=True, media_relative_path="other.mkv", keep_subtitle_indices=[2],
+            ))
+        patcher.assert_called_once_with(
+            other, None, approved=True, test_mode=True,
+            expected_size=stat.st_size, expected_mtime=stat.st_mtime,
+            keep_subtitle_indices=[2],
+        )
+        self.assertEqual(result["status"], "completed")
+        from app.database import connect
+        with connect() as db:
+            history = db.execute(
+                "SELECT candidate_id, status FROM patch_history WHERE relative_path='other.mkv'"
+            ).fetchone()
+        self.assertIsNone(history["candidate_id"])
+        self.assertEqual(history["status"], "patched")
+
+    def test_non_candidate_edit_rejects_unscanned_paths(self):
+        with patch("app.main.patch_mkv") as patcher:
+            with self.assertRaises(HTTPException) as error:
+                edit_scanned_media(MediaEditRequest(
+                    confirm=True, media_relative_path="not-scanned.mkv", keep_subtitle_indices=[],
+                ))
+        self.assertEqual(error.exception.status_code, 404)
+        patcher.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
