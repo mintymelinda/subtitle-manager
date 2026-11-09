@@ -593,7 +593,7 @@ async function runBatch() {
             });
             const result = await response.json();
             if (!response.ok) throw new Error(result.detail || response.statusText);
-            const job = await waitForBatchInjection(result.job_id, id, index + 1, ids.length);
+            const job = await waitForBatchInjection(result.job_id, id, index + 1, totalTargets);
             if (job.status !== "completed") {
                 throw new Error(job.error || "Injection job ended with status " + job.status + ".");
             }
