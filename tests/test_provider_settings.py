@@ -80,6 +80,14 @@ class ProviderSettingsTests(unittest.TestCase):
         self.assertEqual(result["log_level"], "DEBUG")
         self.assertEqual(provider_settings.load_provider_settings()["log_level"], "DEBUG")
 
+    def test_logging_level_can_be_saved_before_provider_is_configured(self):
+        result = provider_settings.save_provider_settings(
+            api_key="", username="", password="",
+            max_candidates_per_file=2, log_level="DEBUG",
+        )
+        self.assertFalse(result["configured"])
+        self.assertEqual(result["log_level"], "DEBUG")
+
     def test_invalid_logging_level_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Logging level must be"):
             provider_settings.save_provider_settings(
