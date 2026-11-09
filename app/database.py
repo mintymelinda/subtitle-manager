@@ -197,9 +197,13 @@ def save_candidate(media_relative_path: str, media_size: int, media_modified_at:
                 media_size=excluded.media_size,
                 media_modified_at=excluded.media_modified_at,
                 subtitle_id=excluded.subtitle_id,
-                file_name=excluded.file_name,
+                file_name=CASE
+                    WHEN subtitle_candidates.status='staged'
+                    THEN subtitle_candidates.file_name ELSE excluded.file_name END,
                 language=excluded.language,
-                format=excluded.format,
+                format=CASE
+                    WHEN subtitle_candidates.status='staged'
+                    THEN subtitle_candidates.format ELSE excluded.format END,
                 release=excluded.release,
                 moviehash_match=excluded.moviehash_match,
                 download_count=excluded.download_count,
@@ -254,16 +258,18 @@ def save_candidate(media_relative_path: str, media_size: int, media_modified_at:
 
 
 def mark_candidate_staged(candidate_id: int, staged_path: str,
-                          remaining: int | None = None, assessment: dict | None = None):
+                          remaining: int | None = None, assessment: dict | None = None,
+                          file_name: str | None = None, subtitle_format: str | None = None):
     with connect() as db:
         db.execute("""
             UPDATE subtitle_candidates
             SET status='staged', staged_path=?, provider_download_remaining=?,
+                file_name=COALESCE(?, file_name), format=COALESCE(?, format),
                 content_language=?, content_language_confidence=?, content_status=?,
                 last_error=NULL, updated_at=CURRENT_TIMESTAMP
             WHERE id=?
         """, (
-            staged_path, remaining,
+            staged_path, remaining, file_name, subtitle_format,
             (assessment or {}).get('content_language'),
             (assessment or {}).get('content_confidence'),
             (assessment or {}).get('content_status', 'unknown'), candidate_id,
