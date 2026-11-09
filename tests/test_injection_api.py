@@ -74,7 +74,7 @@ class InjectionApiSafetyTests(unittest.TestCase):
             "status": "patched", "backup": "/tmp/recovery.bak", "test_mode": True,
         }) as patcher:
             result = inject_candidate(self.candidate_id, InjectRequest(confirm=True))
-        patcher.assert_called_once_with(self.source, self.subtitle, approved=True, test_mode=True, expected_size=self.source.stat().st_size, expected_mtime=self.source.stat().st_mtime, keep_subtitle_indices=[])
+        patcher.assert_called_once_with(self.source, self.subtitle, approved=True, test_mode=True, expected_size=self.source.stat().st_size, expected_mtime=self.source.stat().st_mtime, keep_subtitle_indices=[], target_language="en")
         self.assertEqual(result["status"], "patched")
         self.assertEqual(get_candidate(self.candidate_id)["patch_status"], "patched")
 

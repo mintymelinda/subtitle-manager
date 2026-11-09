@@ -9,6 +9,7 @@ import json
 import re
 
 from app.observability import logger
+from app.languages import normalize_languages, canonical_language
 
 from langdetect import DetectorFactory, detect_langs
 from langdetect.lang_detect_exception import LangDetectException
@@ -241,13 +242,15 @@ class OpenSubtitlesClient:
         self._token = token
         return token
 
-    def search(self, media_path: Path, metadata: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def search(self, media_path: Path, metadata: dict[str, Any] | None = None,
+               *, languages: list[str] | None = None) -> list[dict[str, Any]]:
         metadata = metadata or {}
         # OpenSubtitles recommends searching by the actual filename alongside
         # the movie hash. Container titles often contain only a TV series name,
         # which drops the season/episode/release details and can return no match.
         query = filename_query(media_path)
-        params: dict[str, Any] = {"languages": "en", "query": query}
+        target_languages = normalize_languages(languages)
+        params: dict[str, Any] = {"languages": ",".join(sorted(target_languages)), "query": query}
         moviehash = compute_moviehash(media_path)
         if moviehash:
             params["moviehash"] = moviehash
@@ -282,8 +285,8 @@ class OpenSubtitlesClient:
 
         for item in provider_items:
             attributes = item.get("attributes") or {}
-            language = str(attributes.get("language", "")).lower()
-            if language not in {"en", "eng"}:
+            language = canonical_language(attributes.get("language"))
+            if language not in target_languages:
                 filtered_result("unsupported_language", language=language or "missing")
                 continue
             if attributes.get("machine_translated"):
@@ -315,7 +318,7 @@ class OpenSubtitlesClient:
                     "subtitle_id": attributes.get("subtitle_id") or item.get("id"),
                     "file_id": file_id,
                     "file_name": file_name,
-                    "language": "en",
+                    "language": language,
                     "format": subtitle_format,
                     "release": str(attributes.get("release") or ""),
                     "moviehash_match": bool(attributes.get("moviehash_match")),
