@@ -471,6 +471,19 @@ def finish_candidate_patch(candidate_id: int, status: str, details: dict,
             )
 
 
+
+def record_media_patch(relative_path: str, status: str, details: dict,
+                      backup_path: str | None = None) -> None:
+    with connect() as db:
+        db.execute(
+            """INSERT INTO patch_history(
+                   relative_path, subtitle_name, status, details, candidate_id, backup_path
+               ) VALUES (?, ?, ?, ?, NULL, ?)""",
+            (relative_path, "Existing subtitle track edit", status,
+             json.dumps(details), backup_path),
+        )
+
+
 def recover_interrupted_patches() -> int:
     """Mark operations left running by a process restart; never guess whether to retry."""
     with connect() as db:
