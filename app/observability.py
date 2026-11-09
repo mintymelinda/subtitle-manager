@@ -29,7 +29,11 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        for key in ("event", "job_id", "candidate_id", "media_path", "phase", "status", "error_type"):
+        for key in ("event", "job_id", "candidate_id", "media_path", "phase", "status", "error_type",
+                     "provider_count", "result_count", "accepted_count", "filtered_count",
+                     "filter_reason", "language", "file_count", "file_name", "file_id",
+                     "match_score", "match_reasons", "moviehash_match", "download_count",
+                     "candidate_limit", "selected_count", "remaining_count", "log_level"):
             if hasattr(record, key):
                 payload[key] = getattr(record, key)
         if record.exc_info:
@@ -37,14 +41,17 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(redact(payload), ensure_ascii=False)
 
 
-def configure_logging():
+def configure_logging(level: str = "INFO"):
     root = logging.getLogger()
     if not any(getattr(handler, "_subtitle_json", False) for handler in root.handlers):
         handler = logging.StreamHandler()
         handler.setFormatter(JsonFormatter())
         handler._subtitle_json = True
         root.addHandler(handler)
-    root.setLevel(logging.INFO)
+    normalized = str(level or "INFO").upper()
+    if normalized not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        normalized = "INFO"
+    root.setLevel(getattr(logging, normalized))
 
 
 logger = logging.getLogger("subtitle_manager")
