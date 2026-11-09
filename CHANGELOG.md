@@ -2,6 +2,13 @@
 
 All notable changes to Subtitle Manager are documented here.
 
+## [1.0.2] - 2026-11-09
+
+### Added
+- Publish multi-platform Docker images to GitHub Container Registry for version tags.
+- Provide a Compose deployment configuration that pulls the published GHCR image without building locally.
+- Add OCI image metadata and document GHCR deployment, version pinning, and private-package authentication.
+
 ## [1.0.1] - 2026-11-09
 
 ### Changed
