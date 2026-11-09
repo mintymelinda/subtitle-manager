@@ -91,8 +91,8 @@ class Issue26DashboardTests(unittest.TestCase):
         self.assertIn('id="clear-saved-data"', source)
         self.assertIn('fetch("/api/data/clear"', source)
         self.assertNotIn('return "None reported"', source)
-        self.assertIn('line(details,"Existing audio tracks",streams(c.inspection?.audio_streams))', source)
-        self.assertIn('line(details,"Existing subtitle tracks",streams(c.inspection?.subtitle_streams))', source)
+        self.assertIn('line(details, "Existing audio tracks", streams(c.inspection?.audio_streams))', source)
+        self.assertIn('line(details, "Existing subtitle tracks", streams(c.inspection?.subtitle_streams))', source)
 
     def test_new_scan_clears_visible_candidates_before_request(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
