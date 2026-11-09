@@ -2,6 +2,9 @@ import unittest
 
 from app.languages import LANGUAGE_CODES, normalize_languages, language_matches
 from app.opensubtitles import OpenSubtitlesClient
+from app.patcher import _validate_streams
+from pathlib import Path
+from unittest.mock import patch
 
 
 class TargetLanguageTests(unittest.TestCase):
@@ -19,6 +22,21 @@ class TargetLanguageTests(unittest.TestCase):
         self.assertTrue(language_matches("fra", "fr"))
         self.assertTrue(language_matches("zh-CN", "zh"))
         self.assertFalse(language_matches("de", "fr"))
+
+    def test_patcher_verifies_the_selected_non_english_language(self):
+        before = {"format": {"format_name": "matroska"}, "streams": []}
+        after = {"format": {"format_name": "matroska"}, "streams": [
+            {"codec_type": "subtitle", "codec_name": "subrip",
+             "tags": {"language": "fra", "language_ietf": "fr"}},
+        ]}
+        with patch("app.patcher._subtitle_has_content", return_value=True):
+            _validate_streams(before, after, Path("film.mkv"), [], "fr")
+        wrong_language = {"format": {"format_name": "matroska"}, "streams": [
+            {"codec_type": "subtitle", "codec_name": "subrip",
+             "tags": {"language": "deu", "language_ietf": "de"}},
+        ]}
+        with self.assertRaisesRegex(RuntimeError, "selected target language"):
+            _validate_streams(before, wrong_language, Path("film.mkv"), [], "fr")
 
     def test_search_queries_and_filters_multiple_target_languages(self):
         captured = []

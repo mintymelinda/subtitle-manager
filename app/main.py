@@ -560,10 +560,10 @@ let availableLanguages=[];
 let selectedTargetLanguages=new Set(["en"]);
 const languageNames=new Intl.DisplayNames(["en"],{type:"language"});
 function persistTargetLanguages(){try{localStorage.setItem(languageStateKey,JSON.stringify([...selectedTargetLanguages]));}catch(e){/* Language choices remain usable when storage is unavailable. */}}
-function restoreTargetLanguages(){try{const saved=JSON.parse(localStorage.getItem(languageStateKey)||"null");if(Array.isArray(saved)){const valid=saved.filter(code=>typeof code==="string"&&/^[a-z]{2}$/.test(code));if(valid.length)selectedTargetLanguages=new Set(valid);}}catch(e){selectedTargetLanguages=new Set(["en"]);}}
+function restoreTargetLanguages(){try{const raw=localStorage.getItem(languageStateKey);if(raw!==null){const saved=JSON.parse(raw);if(Array.isArray(saved))selectedTargetLanguages=new Set(saved.filter(code=>typeof code==="string"&&/^[a-z]{2}$/.test(code)));}}catch(e){selectedTargetLanguages=new Set(["en"]);}}
 function languageLabel(code){try{return languageNames.of(code)||code.toUpperCase();}catch(e){return code.toUpperCase();}}
 function renderLanguageOptions(){const host=document.querySelector("#language-options"),query=document.querySelector("#language-search").value.trim().toLowerCase();host.replaceChildren();const filtered=availableLanguages.filter(item=>item.name.toLowerCase().includes(query)||item.code.includes(query));for(const item of filtered){const label=el("label",undefined,"language-option"),check=el("input");check.type="checkbox";check.checked=selectedTargetLanguages.has(item.code);check.addEventListener("change",()=>{if(check.checked)selectedTargetLanguages.add(item.code);else selectedTargetLanguages.delete(item.code);persistTargetLanguages();renderLanguageOptions();});label.append(check,document.createTextNode(item.name+" ("+item.code+")"));host.append(label);}if(!filtered.length)host.append(el("p","No matching languages."));document.querySelector("#selected-languages").textContent=selectedTargetLanguages.size?"Selected: "+[...selectedTargetLanguages].map(languageLabel).join(", "):"Select at least one target language before scanning.";}
-async function loadLanguages(){const response=await fetch("/api/languages"),data=await response.json();if(!response.ok)throw Error(data.detail||response.statusText);availableLanguages=data.languages.map(item=>({code:item.code,name:languageLabel(item.code)}));const valid=new Set(availableLanguages.map(item=>item.code));selectedTargetLanguages=new Set([...selectedTargetLanguages].filter(code=>valid.has(code)));if(!selectedTargetLanguages.size)selectedTargetLanguages.add("en");persistTargetLanguages();renderLanguageOptions();}
+async function loadLanguages(){const response=await fetch("/api/languages"),data=await response.json();if(!response.ok)throw Error(data.detail||response.statusText);availableLanguages=data.languages.map(item=>({code:item.code,name:languageLabel(item.code)}));const valid=new Set(availableLanguages.map(item=>item.code));selectedTargetLanguages=new Set([...selectedTargetLanguages].filter(code=>valid.has(code)));persistTargetLanguages();renderLanguageOptions();}
 restoreTargetLanguages();
 document.querySelector("#language-search").addEventListener("input",renderLanguageOptions);
 loadLanguages().catch(error=>{document.querySelector("#selected-languages").textContent="Could not load language list: "+error.message;});
@@ -1034,6 +1034,10 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path], target_languages: l
 
 @app.post("/api/scan")
 def scan(request: ScanRequest, background_tasks: BackgroundTasks):
+    try:
+        target_languages = normalize_languages(request.languages)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     media_root = Path(settings.media_root).resolve(strict=True)
     requested_paths = request.paths or [request.path]
     roots = []
@@ -1090,10 +1094,6 @@ def scan(request: ScanRequest, background_tasks: BackgroundTasks):
         extra={"event": "scan_inventory_completed", "phase": "discovery",
                "provider_count": len(paths), "status": f"{len(paths)} supported MKV files across {len(roots)} selected folder(s)"},
     )
-    try:
-        target_languages = normalize_languages(request.languages)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
     job = create_job("scan", total=len(paths), metadata={
         "scan_roots": [str(root.relative_to(media_root)) for root in roots],
         "target_languages": target_languages,

@@ -33,7 +33,8 @@ def _signature(stream: dict) -> tuple:
 def _language_matches(stream: dict, expected: str) -> bool:
     from app.languages import language_matches
     tags = stream.get("tags") or {}
-    return language_matches(tags.get("language_ietf") or tags.get("language"), expected)
+    return any(language_matches(value, expected)
+               for value in (tags.get("language_ietf"), tags.get("language")) if value)
 
 
 def _subtitle_has_content(path: Path, stream: dict) -> bool:
