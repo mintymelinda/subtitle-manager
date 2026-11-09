@@ -452,6 +452,9 @@ function renderCandidates(items) {
     updateBatchControls();
 }
 
+document.querySelector("#show-all-scanned-files").addEventListener("change", () => loadCandidates().catch(error => {
+    candidateList.textContent = "Could not load scanned files: " + error.message;
+}));
 document.querySelector("#select-all-candidates").addEventListener("click", selectAllCandidates);
 document.querySelector("#clear-candidate-selection").addEventListener("click", clearCandidateSelection);
 
@@ -795,7 +798,7 @@ def candidates(all: bool = False):
         root = Path(settings.media_root).resolve()
         for media in list_media_files():
             path = media["relative_path"]
-            if path in visible_paths or path in candidate_paths:
+            if path in visible_paths:
                 continue
             media_path = root / path
             try:
