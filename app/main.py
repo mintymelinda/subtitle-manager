@@ -262,9 +262,9 @@ input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-
 </section>
 <section class="panel"><h2>Media scan</h2><p>Browse the mounted media directory and select one or more folders to scan.</p><details class="language-picker"><summary>Choose target languages</summary><label for="language-search">Filter available languages</label><input id="language-search" type="search" placeholder="Search languages by name or code" autocomplete="off"><div id="language-options" class="language-options" aria-label="Available target languages"></div></details><p id="selected-languages" aria-live="polite">Selected: English</p><button id="browse-folders" class="secondary">Browse folders</button><button id="clear-folder-selection" class="secondary" type="button">Clear selection</button><div id="selected-folders" class="selected-folders"><span class="folder-chip">/media (default)</span></div><div id="folder-browser" class="folder-browser" hidden><div class="actions"><button id="folder-up" class="secondary" type="button">Up one level</button><button id="folder-select-current" class="secondary" type="button">Select this folder</button><button id="folder-close" class="secondary" type="button">Close</button></div><p id="folder-current" class="folder-path">/media</p><ul id="folder-list" class="folder-list"></ul><p id="folder-error" class="warning" aria-live="polite"></p></div><button id="scan">Start scan</button><button id="cancel-scan" class="secondary" type="button" hidden disabled>Cancel scan</button><p id="status">Ready.</p><div id="scan-results"></div><div id="job-progress" class="candidate" aria-live="polite">No active job.</div></section>
 <section class="panel"><div class="actions" style="justify-content:space-between;align-items:center"><div><h2>Subtitle candidate review</h2><p>Review candidates for the latest scan.</p><label class="language-option"><input id="show-all-scanned-files" type="checkbox" style="width:auto;margin:0"> Show all scanned files (including non-eligible files)</label></div><button id="clear-saved-data" class="secondary" type="button">Clear saved data</button></div><div class="batch-toolbar">
-<button id="select-all-candidates" class="secondary" type="button" disabled>Select all eligible</button>
+<button id="select-all-candidates" class="secondary" type="button" disabled>Select all available</button>
 <button id="clear-candidate-selection" class="secondary" type="button" disabled>Clear selection</button>
-<button id="batch-run" disabled>Approve & inject selected</button>
+<button id="batch-run" disabled>Approve & patch selected</button>
 <span id="batch-selection-count" aria-live="polite">0 candidates selected</span>
 </div>
 <p id="batch-message" aria-live="polite"></p>
@@ -314,6 +314,7 @@ async function editScannedMedia(path,button){
 }
 async function loadCandidates(){const all=document.querySelector("#show-all-scanned-files")?.checked;const r=await fetch("/api/candidates"+(all?"?all=true":""));const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);renderCandidates(d.candidates);}
 const selectedCandidateIds = new Set();
+const selectedMediaPaths = new Set();
 
 function eligibleForBatch(candidate) {
     return candidate.status === "staged"
@@ -325,13 +326,14 @@ function eligibleForBatch(candidate) {
 }
 
 function updateBatchControls() {
-    const count = selectedCandidateIds.size;
+    const count = selectedCandidateIds.size + selectedMediaPaths.size;
     document.querySelector("#batch-selection-count").textContent =
-        count + (count === 1 ? " candidate selected" : " candidates selected");
+        count + (count === 1 ? " target selected" : " targets selected");
     document.querySelector("#batch-run").disabled = count === 0;
     const selectable = candidateList.querySelectorAll(".candidate-select input[type='checkbox']");
+    const mediaSelectable = candidateList.querySelectorAll(".media-edit-select input[type='checkbox']");
     document.querySelector("#select-all-candidates").disabled =
-        selectable.length === 0 || count === selectable.length;
+        selectable.length + mediaSelectable.length === 0 || count === selectable.length + mediaSelectable.length;
     document.querySelector("#clear-candidate-selection").disabled = count === 0;
 }
 
@@ -341,19 +343,26 @@ function selectAllCandidates() {
         checkbox.checked = true;
         selectedCandidateIds.add(Number(checkbox.value));
     }
+    for (const checkbox of candidateList.querySelectorAll(".media-edit-select input[type='checkbox']")) {
+        checkbox.checked = true;
+        selectedMediaPaths.add(checkbox.value);
+    }
     updateBatchControls();
 }
 
 function clearCandidateSelection() {
     const checkboxes = candidateList.querySelectorAll(".candidate-select input[type='checkbox']");
     for (const checkbox of checkboxes) checkbox.checked = false;
+    for (const checkbox of candidateList.querySelectorAll(".media-edit-select input[type='checkbox']")) checkbox.checked = false;
     selectedCandidateIds.clear();
+    selectedMediaPaths.clear();
     updateBatchControls();
 }
 
 function renderCandidates(items) {
     candidateList.replaceChildren();
-    selectedCandidateIds.clear();
+    for (const id of [...selectedCandidateIds]) if (!items.some(item => !item.is_non_candidate && item.id === id)) selectedCandidateIds.delete(id);
+    for (const path of [...selectedMediaPaths]) if (!items.some(item => item.is_non_candidate && item.media_relative_path === path)) selectedMediaPaths.delete(path);
     updateBatchControls();
     if (!items.length) {
         candidateList.append(el("p", "No saved candidates yet. Run a scan with OpenSubtitles configured."));
@@ -364,7 +373,12 @@ function renderCandidates(items) {
         if (c.is_non_candidate) {
             const card=el("article",undefined,"candidate");card.dataset.mediaPath=c.media_relative_path;
             const heading=el("div",undefined,"candidate-heading"),title=el("div",undefined,"candidate-title");
-            title.append(el("h3",c.file_name),el("p",c.media_relative_path,"candidate-media-path"));heading.append(title);card.append(heading);
+            title.append(el("h3",c.file_name),el("p",c.media_relative_path,"candidate-media-path"));
+            const selectLabel=el("label",undefined,"candidate-select media-edit-select"),selectBox=document.createElement("input");
+            selectBox.type="checkbox";selectBox.value=c.media_relative_path;selectBox.checked=selectedMediaPaths.has(c.media_relative_path);
+            selectBox.setAttribute("aria-label","Select existing-track edit for "+c.file_name);
+            selectBox.addEventListener("change",()=>{if(selectBox.checked)selectedMediaPaths.add(c.media_relative_path);else selectedMediaPaths.delete(c.media_relative_path);updateBatchControls();});
+            selectLabel.append(selectBox,document.createTextNode("Select edit"));heading.append(title,selectLabel);card.append(heading);
             card.append(el("p","Scanned file · not eligible for subtitle injection"));
             line(card,"Existing audio tracks",streams(c.inspection?.audio_streams));renderExistingSubtitleControls(card,c);
             if(c.is_stale)card.append(el("p","This file changed after scanning. Rescan before editing.","warning"));
@@ -384,6 +398,7 @@ function renderCandidates(items) {
             const checkbox = document.createElement("input");
             checkbox.type = "checkbox";
             checkbox.value = String(c.id);
+            checkbox.checked = selectedCandidateIds.has(c.id);
             checkbox.setAttribute("aria-label", "Select " + c.file_name);
             checkbox.addEventListener("change", () => {
                 if (checkbox.checked) selectedCandidateIds.add(c.id);
@@ -498,12 +513,16 @@ async function waitForBatchInjection(jobId, candidateId, index, total) {
 
 async function runBatch() {
     const ids = [...selectedCandidateIds];
-    if (!ids.length) return;
+    const mediaPaths = [...selectedMediaPaths];
+    if (!ids.length && !mediaPaths.length) return;
     const mode = document.querySelector("#mode").textContent;
     const warning = mode === "TEST MODE"
         ? " TEST MODE will replace each selected MKV and retain recovery copies."
         : " LIVE MODE will replace each selected MKV; recovery copies are deleted only after verification.";
-    if (!confirm("Approve and inject all selected candidates in sequence?" + warning)) return;
+    const mediaWarning = mediaPaths.length
+        ? " " + mediaPaths.length + " non-candidate file(s) will receive existing-track-only edits; no downloaded subtitles will be injected."
+        : "";
+    if (!confirm("Approve and patch " + (ids.length + mediaPaths.length) + " selected target(s) in sequence?" + warning + mediaWarning)) return;
 
     const runButton = document.querySelector("#batch-run");
     runButton.disabled = true;
@@ -511,7 +530,7 @@ async function runBatch() {
     const panel = document.querySelector("#job-progress");
     let succeeded = 0;
     const failures = [];
-    message.textContent = "Preparing " + ids.length + " selected candidate(s)…";
+    message.textContent = "Preparing " + (ids.length + mediaPaths.length) + " selected target(s)…";
     let candidatesById;
     try {
         const response = await fetch("/api/candidates");
@@ -524,12 +543,36 @@ async function runBatch() {
         return;
     }
 
-    for (let index = 0; index < ids.length; index++) {
+    const totalTargets = ids.length + mediaPaths.length;
+    for (let index = 0; index < totalTargets; index++) {
+        if (index >= ids.length) {
+            const path = mediaPaths[index - ids.length];
+            const card = [...candidateList.querySelectorAll(".candidate")].find(item => item.dataset.mediaPath === path);
+            const indices = card ? [...card.querySelectorAll(".existing-subtitle-track input:checked")].map(input => Number(input.value)) : [];
+            message.textContent = "Editing existing subtitle tracks " + (index + 1) + "/" + totalTargets + " (" + path + ")…";
+            panel.replaceChildren(el("strong", "Existing-track edit · " + (index + 1) + "/" + totalTargets + " · " + path));
+            try {
+                const reprocess = indices.length === 0 && confirm("No subtitle tracks will remain in " + path + ". Re-mux with no subtitles and retry matching?");
+                if (indices.length === 0 && !reprocess) throw new Error("Skipped: removal of every subtitle track was not confirmed.");
+                const response = await fetch("/api/media-files/edit", {method:"POST",headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify({confirm:true,media_relative_path:path,keep_subtitle_indices:indices,
+                        reprocess_if_empty:reprocess,target_languages:[...selectedTargetLanguages]})});
+                const result = await response.json();if(!response.ok)throw new Error(result.detail||response.statusText);
+                succeeded++;
+                panel.append(el("p",result.message||"Existing subtitle tracks updated."));
+            } catch(error) {
+                failures.push(path + ": " + error.message);
+                panel.append(el("p",path + " failed: " + error.message,"warning"));
+            }
+            message.textContent = "Processed " + (index + 1) + "/" + totalTargets
+                + " targets · " + succeeded + " succeeded · " + failures.length + " failed.";
+            continue;
+        }
         const id = ids[index];
         const candidate = candidatesById.get(id);
-        message.textContent = "Processing candidate " + (index + 1) + "/" + ids.length
+        message.textContent = "Processing candidate " + (index + 1) + "/" + totalTargets
             + " (#" + id + ")…";
-        panel.replaceChildren(el("strong", "Batch injection · " + (index + 1) + "/" + ids.length
+        panel.replaceChildren(el("strong", "Batch injection · " + (index + 1) + "/" + totalTargets
             + " · Candidate #" + id + " · preparing"));
         try {
             if (!candidate) throw new Error("Candidate is no longer available.");
@@ -550,25 +593,25 @@ async function runBatch() {
             });
             const result = await response.json();
             if (!response.ok) throw new Error(result.detail || response.statusText);
-            const job = await waitForBatchInjection(result.job_id, id, index + 1, ids.length);
+            const job = await waitForBatchInjection(result.job_id, id, index + 1, totalTargets);
             if (job.status !== "completed") {
                 throw new Error(job.error || "Injection job ended with status " + job.status + ".");
             }
             succeeded++;
-            message.textContent = "Processed " + (index + 1) + "/" + ids.length
-                + " candidates · " + succeeded + " injected · " + failures.length + " failed.";
+            message.textContent = "Processed " + (index + 1) + "/" + totalTargets
+                + " targets · " + succeeded + " succeeded · " + failures.length + " failed.";
         } catch (error) {
             failures.push("Candidate #" + id + ": " + error.message);
             panel.append(el("p", "Candidate #" + id + " failed: " + error.message, "warning"));
-            message.textContent = "Processed " + (index + 1) + "/" + ids.length
-                + " candidates · " + succeeded + " injected · " + failures.length + " failed.";
+            message.textContent = "Processed " + (index + 1) + "/" + totalTargets
+                + " targets · " + succeeded + " succeeded · " + failures.length + " failed.";
         }
     }
 
-    message.textContent = succeeded + " injected; " + failures.length + " failed."
+    message.textContent = succeeded + " patched; " + failures.length + " failed."
         + (failures.length ? " " + failures.join(" | ") : "");
     await loadCandidates();
-    runButton.disabled = selectedCandidateIds.size === 0;
+    runButton.disabled = selectedCandidateIds.size + selectedMediaPaths.size === 0;
 }
 
 document.querySelector("#batch-run").addEventListener("click", runBatch);
