@@ -88,6 +88,8 @@ def _validate_streams(before: dict, after: dict, output_path: Path,
     after_subs = [s for s in after_streams if s.get("codec_type") == "subtitle"]
     expected_count = len(before_subs) + (1 if subtitle_added else 0)
     if len(after_subs) != expected_count:
+        if subtitle_added:
+            raise RuntimeError("Validation failed: the new subtitle stream is missing or unexpected existing subtitle tracks remain")
         raise RuntimeError("Validation failed: output subtitle track count does not match the requested edit")
 
     remaining = list(after_subs)
