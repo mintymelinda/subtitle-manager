@@ -25,6 +25,7 @@ from app.provider_settings import (
     load_provider_settings, public_provider_settings, save_provider_settings,
     test_provider_settings,
 )
+from app.languages import LANGUAGE_CODES, normalize_languages, language_matches
 
 app = FastAPI(title=settings.app_name)
 
@@ -32,6 +33,7 @@ app = FastAPI(title=settings.app_name)
 class ScanRequest(BaseModel):
     path: str = "/media"
     paths: list[str] = []
+    languages: list[str] = ["en"]
 
 
 class CandidateDecisionRequest(BaseModel):
@@ -69,14 +71,15 @@ def media_path_is_safe(path: Path, root: Path) -> bool:
 
 
 def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
-                     stat_result, metadata: dict) -> dict:
+                     stat_result, metadata: dict, target_languages: list[str] | None = None) -> dict:
     """Search and stage the top candidates outside the media mount."""
     relative_media_path = str(path.relative_to(media_root))
     staging_root = Path(settings.subtitle_staging_path).resolve()
     if staging_root == media_root or staging_root.is_relative_to(media_root):
         raise OpenSubtitlesError("Subtitle staging directory must be outside the media library.")
     logger.info("opensubtitles_search_started", extra={"event":"opensubtitles_search_started","media_path":relative_media_path,"phase":"discovery"})
-    candidates = client.search(path, metadata)
+    target_languages = normalize_languages(target_languages)
+    candidates = client.search(path, metadata, languages=target_languages)
     logger.info("opensubtitles_search_completed", extra={"event":"opensubtitles_search_completed","media_path":relative_media_path,"phase":"discovery","status":f"{len(candidates)} candidates","provider_count":len(candidates)})
     summary = {"status": "no_candidates" if not candidates else "complete",
                "found": len(candidates), "staged": 0, "candidates": []}
@@ -123,14 +126,17 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
             else:
                 try:
                     file_name, payload, remaining = client.download(candidate["file_id"])
-                    assessment = assess_subtitle_payload(file_name, payload)
-                    if assessment["content_status"] == "other":
+                    assessment = assess_subtitle_payload(
+                        file_name, payload, expected_language=candidate["language"]
+                    )
+                    detected_language = assessment.get("content_language")
+                    if detected_language and not language_matches(detected_language, candidate["language"]):
                         mark_candidate_error(
                             row["id"],
-                            "Downloaded subtitle content does not appear to be English.",
-                            status="rejected_non_english",
+                            "Downloaded subtitle content does not match the candidate's declared language.",
+                            status="rejected_language_mismatch",
                         )
-                        status = "rejected_non_english"
+                        status = "rejected_language_mismatch"
                     else:
                         staging_root.mkdir(parents=True, exist_ok=True)
                         extension = Path(file_name).suffix.lower()
@@ -224,6 +230,9 @@ button:disabled{opacity:.5;cursor:not-allowed}.notice{border-left:4px solid #eab
 .batch-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:.65rem;margin:.5rem 0 1rem}
 .batch-toolbar button:disabled{opacity:.45}
 #batch-selection-count{color:#aebbd0;font-size:.9rem}
+.language-picker summary{cursor:pointer;color:#93c5fd;margin:.5rem 0}.language-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:.25rem .75rem;max-height:220px;overflow:auto;padding:.5rem;border:1px solid #475569;border-radius:8px;background:#111827}
+.language-option{display:flex;align-items:center;gap:.45rem;font-size:.9rem;padding:.2rem 0}
+.language-option input{width:auto;margin:0}
 .actions{display:flex;flex-wrap:wrap;gap:.8rem;margin-top:.65rem}
 .actions a{color:#93c5fd;padding:.5rem 0}.secondary{background:#4b5563}.warning{color:#fbbf24}
 input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-radius:8px;border:1px solid #64748b;background:#111827;color:#e5e7eb}
@@ -242,7 +251,7 @@ input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-
 <div class="actions"><button id="provider-save">Save settings</button><button id="provider-test" class="secondary">Test connection</button></div>
 <p id="provider-message" aria-live="polite"></p>
 </section>
-<section class="panel"><h2>Media scan</h2><p>Browse the mounted media directory and select one or more folders to scan.</p><button id="browse-folders" class="secondary">Browse folders</button><button id="clear-folder-selection" class="secondary" type="button">Clear selection</button><div id="selected-folders" class="selected-folders"><span class="folder-chip">/media (default)</span></div><div id="folder-browser" class="folder-browser" hidden><div class="actions"><button id="folder-up" class="secondary" type="button">Up one level</button><button id="folder-select-current" class="secondary" type="button">Select this folder</button><button id="folder-close" class="secondary" type="button">Close</button></div><p id="folder-current" class="folder-path">/media</p><ul id="folder-list" class="folder-list"></ul><p id="folder-error" class="warning" aria-live="polite"></p></div><button id="scan">Start scan</button><button id="cancel-scan" class="secondary" type="button" hidden disabled>Cancel scan</button><p id="status">Ready.</p><div id="scan-results"></div><div id="job-progress" class="candidate" aria-live="polite">No active job.</div></section>
+<section class="panel"><h2>Media scan</h2><p>Browse the mounted media directory and select one or more folders to scan.</p><details class="language-picker"><summary>Choose target languages</summary><label for="language-search">Filter available languages</label><input id="language-search" type="search" placeholder="Search languages by name or code" autocomplete="off"><div id="language-options" class="language-options" aria-label="Available target languages"></div></details><p id="selected-languages" aria-live="polite">Selected: English</p><button id="browse-folders" class="secondary">Browse folders</button><button id="clear-folder-selection" class="secondary" type="button">Clear selection</button><div id="selected-folders" class="selected-folders"><span class="folder-chip">/media (default)</span></div><div id="folder-browser" class="folder-browser" hidden><div class="actions"><button id="folder-up" class="secondary" type="button">Up one level</button><button id="folder-select-current" class="secondary" type="button">Select this folder</button><button id="folder-close" class="secondary" type="button">Close</button></div><p id="folder-current" class="folder-path">/media</p><ul id="folder-list" class="folder-list"></ul><p id="folder-error" class="warning" aria-live="polite"></p></div><button id="scan">Start scan</button><button id="cancel-scan" class="secondary" type="button" hidden disabled>Cancel scan</button><p id="status">Ready.</p><div id="scan-results"></div><div id="job-progress" class="candidate" aria-live="polite">No active job.</div></section>
 <section class="panel"><div class="actions" style="justify-content:space-between;align-items:center"><div><h2>Subtitle candidate review</h2><p>Review candidates for the latest scan.</p></div><button id="clear-saved-data" class="secondary" type="button">Clear saved data</button></div><div class="batch-toolbar">
 <button id="select-all-candidates" class="secondary" type="button" disabled>Select all eligible</button>
 <button id="clear-candidate-selection" class="secondary" type="button" disabled>Clear selection</button>
@@ -548,6 +557,18 @@ document.querySelector("#provider-test").addEventListener("click",async()=>{cons
 loadProviderSettings();
 fetch("/api/config").then(r=>r.json()).then(c=>{document.querySelector("#mode").textContent=c.test_mode?"TEST MODE":"LIVE MODE";}).catch(()=>{document.querySelector("#mode").textContent="unknown";});
 let browserPath="";let selectedFolders=new Set();
+const languageStateKey="subtitle-manager.target-languages.v1";
+let availableLanguages=[];
+let selectedTargetLanguages=new Set(["en"]);
+const languageNames=new Intl.DisplayNames(["en"],{type:"language"});
+function persistTargetLanguages(){try{localStorage.setItem(languageStateKey,JSON.stringify([...selectedTargetLanguages]));}catch(e){/* Language choices remain usable when storage is unavailable. */}}
+function restoreTargetLanguages(){try{const raw=localStorage.getItem(languageStateKey);if(raw!==null){const saved=JSON.parse(raw);if(Array.isArray(saved))selectedTargetLanguages=new Set(saved.filter(code=>typeof code==="string"&&/^[a-z]{2}$/.test(code)));}}catch(e){selectedTargetLanguages=new Set(["en"]);}}
+function languageLabel(code){try{return languageNames.of(code)||code.toUpperCase();}catch(e){return code.toUpperCase();}}
+function renderLanguageOptions(){const host=document.querySelector("#language-options"),query=document.querySelector("#language-search").value.trim().toLowerCase();host.replaceChildren();const filtered=availableLanguages.filter(item=>item.name.toLowerCase().includes(query)||item.code.includes(query));for(const item of filtered){const label=el("label",undefined,"language-option"),check=el("input");check.type="checkbox";check.checked=selectedTargetLanguages.has(item.code);check.addEventListener("change",()=>{if(check.checked)selectedTargetLanguages.add(item.code);else selectedTargetLanguages.delete(item.code);persistTargetLanguages();renderLanguageOptions();});label.append(check,document.createTextNode(item.name+" ("+item.code+")"));host.append(label);}if(!filtered.length)host.append(el("p","No matching languages."));document.querySelector("#selected-languages").textContent=selectedTargetLanguages.size?"Selected: "+[...selectedTargetLanguages].map(languageLabel).join(", "):"Select at least one target language before scanning.";}
+async function loadLanguages(){const response=await fetch("/api/languages"),data=await response.json();if(!response.ok)throw Error(data.detail||response.statusText);availableLanguages=data.languages.map(item=>({code:item.code,name:languageLabel(item.code)})).sort((a,b)=>a.name.localeCompare(b.name));const valid=new Set(availableLanguages.map(item=>item.code));selectedTargetLanguages=new Set([...selectedTargetLanguages].filter(code=>valid.has(code)));persistTargetLanguages();renderLanguageOptions();}
+restoreTargetLanguages();
+document.querySelector("#language-search").addEventListener("input",renderLanguageOptions);
+loadLanguages().catch(error=>{document.querySelector("#selected-languages").textContent="Could not load language list: "+error.message;});
 const folderStateKey="subtitle-manager.folder-state.v1";
 function persistFolderState(){try{localStorage.setItem(folderStateKey,JSON.stringify({browserPath,selectedFolders:[...selectedFolders]}));}catch(e){/* Browsing remains usable when storage is unavailable. */}}
 function restoreFolderState(){try{const saved=JSON.parse(localStorage.getItem(folderStateKey)||"null");if(!saved||typeof saved!=="object")return;if(typeof saved.browserPath==="string"&&!saved.browserPath.startsWith("/")&&!saved.browserPath.split("/").includes(".."))browserPath=saved.browserPath;if(Array.isArray(saved.selectedFolders))selectedFolders=new Set(saved.selectedFolders.filter(path=>typeof path==="string"&&!path.startsWith("/")&&!path.split("/").includes("..")));}catch(e){browserPath="";selectedFolders=new Set();}}
@@ -560,7 +581,7 @@ document.querySelector("#folder-up").addEventListener("click",()=>{const parent=
 document.querySelector("#folder-select-current").addEventListener("click",()=>{selectedFolders.add(browserPath);persistFolderState();renderSelectedFolders();});
 document.querySelector("#folder-close").addEventListener("click",()=>{document.querySelector("#folder-browser").hidden=true;});
 document.querySelector("#clear-folder-selection").addEventListener("click",()=>{selectedFolders.clear();persistFolderState();renderSelectedFolders();});
-scanButton.addEventListener("click",async()=>{scanButton.disabled=true;cancelScanButton.hidden=true;status.textContent="Starting scan…";scanResults.replaceChildren();candidateList.replaceChildren(el("p","Previous scan candidates cleared. Waiting for new results…"));try{const paths=selectedFolders.size?[...selectedFolders]:[""];persistFolderState();const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paths})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);status.textContent="Scan queued: "+d.total+" media files across "+paths.length+" folder(s).";trackJob(d.job_id);}catch(e){status.textContent="Could not start scan: "+e.message;scanButton.disabled=false;await loadCandidates();}});
+scanButton.addEventListener("click",async()=>{if(!selectedTargetLanguages.size){status.textContent="Select at least one target language before scanning.";return;}scanButton.disabled=true;cancelScanButton.hidden=true;status.textContent="Starting scan…";scanResults.replaceChildren();candidateList.replaceChildren(el("p","Previous scan candidates cleared. Waiting for new results…"));try{const paths=selectedFolders.size?[...selectedFolders]:[""];persistFolderState();const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paths,languages:[...selectedTargetLanguages]})});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);status.textContent="Scan queued: "+d.total+" media files across "+paths.length+" folder(s).";trackJob(d.job_id);}catch(e){status.textContent="Could not start scan: "+e.message;scanButton.disabled=false;await loadCandidates();}});
 async function readJsonResponse(response,context){const body=await response.text();let data;try{data=body?JSON.parse(body):null;}catch{const preview=body.trim().slice(0,180);throw Error(context+" returned non-JSON (HTTP "+response.status+"). "+(preview||"The response body was empty."));}if(!response.ok)throw Error(data?.detail||context+" failed (HTTP "+response.status+").");if(!data||typeof data!=="object")throw Error(context+" returned an empty or invalid response.");return data;}
 async function trackJob(id){if(activeTrackedJobId===id)return;activeTrackedJobId=id;const panel=document.querySelector("#job-progress");let failures=0;let stopped=false;activeScanJobId=null;async function poll(){if(stopped)return;try{const r=await fetch("/api/jobs/"+id,{headers:{"Accept":"application/json"}});const j=await readJsonResponse(r,"Job status request");if(j.kind==="scan"&&["queued","running"].includes(j.status)){activeScanJobId=id;cancelScanButton.hidden=false;cancelScanButton.disabled=false;}else if(j.kind==="scan"){activeScanJobId=null;cancelScanButton.hidden=true;}if(typeof j.id!=="number"||typeof j.status!=="string")throw Error("Job status response is missing its job identity or status.");failures=0;panel.replaceChildren();panel.append(el("strong","Job #"+j.id+" · "+j.kind+" · "+j.status));line(panel,"Progress",j.completed+"/"+j.total+" · "+j.succeeded+" succeeded · "+j.failed+" failed");line(panel,"Phase",j.phase||"queued");line(panel,"Current file",j.current_file||"—");if(j.error)panel.append(el("p",j.error,"warning"));if(["completed","failed","cancelled","interrupted"].includes(j.status)){stopped=true;activeTrackedJobId=null;scanButton.disabled=false;cancelScanButton.hidden=true;activeScanJobId=null;status.textContent=j.kind==="scan"?"Scan "+j.status+".":"Injection "+j.status+".";await loadCandidates();return;}setTimeout(poll,1000);}catch(e){failures++;panel.replaceChildren();panel.append(el("p","Job #"+id+" is still being tracked, but its status could not be read: "+e.message,"warning"));if(failures<5){panel.append(el("p","Retrying status check ("+failures+"/5)…"));setTimeout(poll,Math.min(1000*Math.pow(2,failures-1),8000));return;}stopped=true;activeTrackedJobId=null;scanButton.disabled=false;cancelScanButton.hidden=true;activeScanJobId=null;status.textContent="Job #"+id+" may still be running; status tracking paused after repeated request failures.";const retry=el("button","Retry status check");retry.addEventListener("click",()=>{stopped=false;failures=0;retry.remove();poll();});panel.append(retry);}}poll();}
 cancelScanButton.addEventListener("click",async()=>{if(activeScanJobId===null)return;cancelScanButton.disabled=true;status.textContent="Requesting scan cancellation…";try{const r=await fetch("/api/jobs/"+activeScanJobId+"/cancel",{method:"POST",headers:{"Accept":"application/json"}});const d=await readJsonResponse(r,"Cancel scan request");status.textContent=d.status==="cancelled"?"Scan cancelled. The current file, if any, was allowed to finish.":"Scan is no longer active ("+d.status+").";cancelScanButton.hidden=true;activeScanJobId=null;}catch(e){status.textContent="Could not cancel scan: "+e.message;cancelScanButton.disabled=false;}});\ndocument.querySelector("#clear-saved-data").addEventListener("click",async()=>{if(!confirm("Permanently clear all saved jobs, scan results, subtitle candidates, and patch history? This does not modify media files."))return;const button=document.querySelector("#clear-saved-data"),message=document.querySelector("#clear-data-message");button.disabled=true;message.textContent="Clearing saved data…";try{const r=await fetch("/api/data/clear",{method:"POST",headers:{"Accept":"application/json"}});const d=await readJsonResponse(r,"Clear saved data request");candidateList.replaceChildren(el("p","No saved candidates. Run a new scan to find subtitles."));scanResults.replaceChildren();document.querySelector("#job-progress").replaceChildren(el("p","No saved job progress."));status.textContent="Saved data cleared.";message.textContent="Cleared saved jobs, results, candidates, and patch history.";}catch(e){message.textContent="Could not clear saved data: "+e.message;}finally{button.disabled=false;}});
@@ -588,6 +609,11 @@ resumeLatestJob();
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/languages")
+def languages():
+    return {"languages": [{"code": code} for code in sorted(LANGUAGE_CODES)]}
 
 
 @app.get("/api/config")
@@ -791,7 +817,8 @@ def candidate_decision(candidate_id: int, request: CandidateDecisionRequest):
 
 
 def _run_injection_job(job_id: int, candidate_id: int, row: dict,
-                       source: Path, subtitle: Path, keep_subtitle_indices: list[int] | None = None):
+                       source: Path, subtitle: Path, keep_subtitle_indices: list[int] | None = None,
+                       target_language: str = "en"):
     start_job(job_id)
     update_job_progress(job_id, phase="muxing", current_file=row["media_relative_path"], total=1)
     logger.info("injection_started", extra={"event":"injection_started","job_id":job_id,
@@ -801,7 +828,8 @@ def _run_injection_job(job_id: int, candidate_id: int, row: dict,
     try:
         result = patch_mkv(source, subtitle, approved=True, test_mode=settings.test_mode,
                            expected_size=row["media_size"], expected_mtime=row["media_modified_at"],
-                           keep_subtitle_indices=keep_subtitle_indices)
+                           keep_subtitle_indices=keep_subtitle_indices,
+                           target_language=target_language)
         finish_candidate_patch(candidate_id, "patched", result, result.get("backup"))
         record_job_item(job_id, media_path=row["media_relative_path"], status="completed",
                         phase="verified", candidate_id=candidate_id, review_decision="approved",
@@ -881,8 +909,9 @@ def inject_candidate(candidate_id: int, request: InjectRequest, background_tasks
             raise HTTPException(status_code=404, detail="Staged subtitle file is unavailable.")
     except (OSError, RuntimeError, ValueError):
         raise HTTPException(status_code=404, detail="Staged subtitle file is unavailable.")
-    if row["language"].strip().lower() not in {"en", "eng", "english"}:
-        raise HTTPException(status_code=415, detail="Only English subtitle candidates can be injected.")
+    target_language = row["language"].strip().lower()
+    if target_language not in LANGUAGE_CODES:
+        raise HTTPException(status_code=415, detail="The candidate has an unsupported target language. Rescan with a supported language.")
     if subtitle.suffix.lower() not in {".srt", ".ass", ".ssa", ".sup", ".sub"}:
         raise HTTPException(status_code=415, detail="Unsupported subtitle format.")
     if Path(row["file_name"]).suffix.lower() != subtitle.suffix.lower():
@@ -914,25 +943,26 @@ def inject_candidate(candidate_id: int, request: InjectRequest, background_tasks
                     phase="queued", candidate_id=candidate_id, review_decision="approved",
                     patch_status="running")
     if background_tasks is None:
-        result = _run_injection_job(job["id"], candidate_id, row, source, subtitle, requested_indices)
+        result = _run_injection_job(job["id"], candidate_id, row, source, subtitle, requested_indices, target_language)
         if result is None:
             raise HTTPException(status_code=500, detail="Subtitle injection failed. Inspect job history and retained recovery files.")
         return {"candidate_id":candidate_id,"media":row["media_relative_path"],
                 "test_mode":settings.test_mode,**result}
-    background_tasks.add_task(_run_injection_job, job["id"], candidate_id, row, source, subtitle, requested_indices)
+    background_tasks.add_task(_run_injection_job, job["id"], candidate_id, row, source, subtitle, requested_indices, target_language)
     logger.info("injection_queued", extra={"event":"injection_queued","job_id":job["id"],
                 "candidate_id":candidate_id,"media_path":row["media_relative_path"],"phase":"queued"})
     return {"job_id":job["id"],"candidate_id":candidate_id,"status":"queued",
             "test_mode":settings.test_mode}
 
 
-def _scan_worker(job_id: int, root: Path, paths: list[Path]):
+def _scan_worker(job_id: int, root: Path, paths: list[Path], target_languages: list[str] | None = None):
     start_job(job_id)
     try:
         job_state = get_job(job_id)
         if job_state is None or job_state["status"] != "running":
             return
         update_job_progress(job_id, phase="inspecting", total=len(paths))
+        target_languages = normalize_languages(target_languages)
         client = None
         provider = load_provider_settings()
         if provider["api_key"]:
@@ -955,7 +985,7 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path]):
                 record_scan(media_relative_path, stat_result.st_size, stat_result.st_mtime, details)
                 summary = {"status":"not_configured","found":0,"staged":0,"candidates":[]}
                 phase = "inspected"
-                if details["has_verified_english_subtitle"]:
+                if target_languages == ["en"] and details["has_verified_english_subtitle"]:
                     summary["status"] = "verified_english_present"
                     logger.info(
                         "candidate_discovery_skipped",
@@ -968,7 +998,7 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path]):
                     update_job_progress(job_id, phase=phase, current_file=media_relative_path)
                     try:
                         summary = stage_candidates(client, path, Path(settings.media_root).resolve(),
-                                                   stat_result, details.get("metadata") or {})
+                                                   stat_result, details.get("metadata") or {}, target_languages)
                     except OpenSubtitlesError as exc:
                         logger.warning("opensubtitles_search_failed", extra={"event":"opensubtitles_search_failed","job_id":job_id,"media_path":media_relative_path,"phase":"discovery","error_type":type(exc).__name__})
                         summary = {"status":"provider_error","found":0,"staged":0,
@@ -1006,6 +1036,10 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path]):
 
 @app.post("/api/scan")
 def scan(request: ScanRequest, background_tasks: BackgroundTasks):
+    try:
+        target_languages = normalize_languages(request.languages)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     media_root = Path(settings.media_root).resolve(strict=True)
     requested_paths = request.paths or [request.path]
     roots = []
@@ -1062,8 +1096,11 @@ def scan(request: ScanRequest, background_tasks: BackgroundTasks):
         extra={"event": "scan_inventory_completed", "phase": "discovery",
                "provider_count": len(paths), "status": f"{len(paths)} supported MKV files across {len(roots)} selected folder(s)"},
     )
-    job = create_job("scan", total=len(paths), metadata={"scan_roots":[str(root.relative_to(media_root)) for root in roots]})
-    background_tasks.add_task(_scan_worker, job["id"], media_root, paths)
+    job = create_job("scan", total=len(paths), metadata={
+        "scan_roots": [str(root.relative_to(media_root)) for root in roots],
+        "target_languages": target_languages,
+    })
+    background_tasks.add_task(_scan_worker, job["id"], media_root, paths, target_languages)
     logger.info("scan_job_queued", extra={"event":"scan_job_queued","job_id":job["id"],
                 "phase":"queued","status":"queued"})
     return {"job_id":job["id"],"status":"queued","total":len(paths),"folders":len(roots)}
