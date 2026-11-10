@@ -1,7 +1,9 @@
 import json
 import unittest
 
-from app.observability import JsonFormatter, timed_stage
+from pathlib import Path
+
+from app.observability import JsonFormatter, safe_file_size, timed_stage
 
 
 class StageTimingTests(unittest.TestCase):
@@ -26,6 +28,9 @@ class StageTimingTests(unittest.TestCase):
         event = json.loads(JsonFormatter().format(captured.records[0]))
         self.assertEqual(event["stage"], "failing_stage")
         self.assertGreaterEqual(event["elapsed_ms"], 0)
+
+    def test_missing_path_does_not_break_timing_metadata(self):
+        self.assertIsNone(safe_file_size(Path("missing-fixture.mkv")))
 
 
 if __name__ == "__main__":
