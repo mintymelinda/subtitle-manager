@@ -23,7 +23,7 @@ class StageTimingTests(unittest.TestCase):
                 with timed_stage("failing_stage"):
                     raise RuntimeError("expected")
 
-        event = json.loads(captured.output[0].split(":INFO:subtitle_manager:", 1)[-1])
+        event = json.loads(JsonFormatter().format(captured.records[0]))
         self.assertEqual(event["stage"], "failing_stage")
         self.assertGreaterEqual(event["elapsed_ms"], 0)
 
