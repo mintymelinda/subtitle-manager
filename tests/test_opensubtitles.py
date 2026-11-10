@@ -1,5 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import unittest
+from unittest.mock import patch
 import urllib.parse
 from pathlib import Path
 
@@ -179,6 +181,20 @@ class OpenSubtitlesTests(unittest.TestCase):
         self.assertEqual(assess_subtitle_payload("candidate.srt", french)["content_status"], "other")
         self.assertEqual(assess_subtitle_payload("candidate.srt", b"Hi")["content_status"], "unknown")
         self.assertEqual(assess_subtitle_payload("candidate.sup", b"binary")["content_status"], "unknown")
+
+    def test_concurrent_download_reservations_never_exceed_known_quota(self):
+        client = OpenSubtitlesClient("test-secret")
+        client.remaining_downloads = 2
+        with patch.object(
+            client, "download",
+            side_effect=lambda file_id: (f"{file_id}.srt", b"subtitle", 1),
+        ) as download:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                results = list(executor.map(client.download_if_available, range(4)))
+
+        self.assertEqual(download.call_count, 2)
+        self.assertEqual(sum(result is not None for result in results), 2)
+        self.assertEqual(client.remaining_downloads, 0)
 
     def test_empty_api_key_is_rejected(self):
         with self.assertRaises(OpenSubtitlesError):
