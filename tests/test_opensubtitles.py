@@ -1,9 +1,11 @@
-from concurrent.futures import ThreadPoolExecutor
 import tempfile
+import threading
+import time
 import unittest
-from unittest.mock import patch
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from app.opensubtitles import (
     OpenSubtitlesClient, OpenSubtitlesError, compute_moviehash,
@@ -186,8 +188,6 @@ class OpenSubtitlesTests(unittest.TestCase):
         client = OpenSubtitlesClient("test-secret")
         active = 0
         peak = 0
-        import threading
-        import time
         lock = threading.Lock()
 
         def download(file_id):
