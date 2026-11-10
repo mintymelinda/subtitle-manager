@@ -344,7 +344,9 @@ function renderExistingSubtitleControls(card,candidate,allCandidates){
                 run.disabled=false;automaticCheckbox.disabled=false;
             }
         });
+        card.append(fieldset);
         card.append(run,result);
+        return;
     }
     card.append(fieldset);
 }
