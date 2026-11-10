@@ -1299,6 +1299,12 @@ def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
             if _scan_file_identity(current_stat) != _scan_file_identity(stat_result):
                 stat_result = current_stat
                 details = None
+        if not _scan_job_is_running(job_id):
+            return {
+                "media_path": media_relative_path,
+                "status": "cancelled",
+                "phase": "cancelled",
+            }
         if details is None:
             with timed_stage("media_inspection", job_id=job_id,
                              media_path=media_relative_path,
