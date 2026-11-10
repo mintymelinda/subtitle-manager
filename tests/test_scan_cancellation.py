@@ -68,7 +68,7 @@ class ScanCancellationTests(unittest.TestCase):
         media_file = media_root / "movie.mkv"
         media_file.write_bytes(b"fixture")
         with patch("app.main.inspect_media") as inspect:
-            _scan_worker(job["id"], media_root, [media_file])
+            _scan_worker(job["id"], media_root, [media_root])
         inspect.assert_not_called()
         self.assertEqual(get_job(job["id"])["status"], "cancelled")
 

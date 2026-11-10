@@ -157,8 +157,11 @@ class InspectionCacheTests(unittest.TestCase):
         )
         job = create_job("scan", total=1)
 
-        with patch("app.main.inspect_media") as inspect:
-            _scan_worker(job["id"], self.root, [media])
+        with (
+            patch("app.main.inspect_media") as inspect,
+            patch("app.main.scan_media", return_value=[media]),
+        ):
+            _scan_worker(job["id"], self.root, [self.root])
 
         inspect.assert_not_called()
         self.assertEqual(get_job(job["id"])["status"], "completed")
@@ -183,8 +186,11 @@ class InspectionCacheTests(unittest.TestCase):
             "subtitle_streams": [],
         }
 
-        with patch("app.main.inspect_media", return_value=inspection) as inspect:
-            _scan_worker(job["id"], self.root, [media])
+        with (
+            patch("app.main.inspect_media", return_value=inspection) as inspect,
+            patch("app.main.scan_media", return_value=[media]),
+        ):
+            _scan_worker(job["id"], self.root, [self.root])
 
         inspect.assert_called_once_with(media)
         self.assertEqual(get_job(job["id"])["status"], "completed")

@@ -5,9 +5,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fastapi import BackgroundTasks
+
 from app.config import settings
 from app.database import create_job, finish_job, get_job, initialize
-from app.main import _scan_worker
+from app.main import ScanRequest, _scan_worker, scan
 
 
 class ScanConcurrencyTests(unittest.TestCase):
@@ -47,6 +49,21 @@ class ScanConcurrencyTests(unittest.TestCase):
                 "candidates": [],
             },
         }
+
+    def test_scan_endpoint_queues_inventory_without_walking_media_tree(self):
+        job_tasks = BackgroundTasks()
+        with (
+            patch("app.main.scan_media") as inventory,
+            patch("app.main.clear_pending_review_queue", return_value=[]),
+        ):
+            response = scan(ScanRequest(paths=["/media"]), job_tasks)
+
+        inventory.assert_not_called()
+        self.assertEqual(response["status"], "queued")
+        self.assertNotIn("total", response)
+        self.assertEqual(len(job_tasks.tasks), 1)
+        self.assertEqual(job_tasks.tasks[0].func, _scan_worker)
+        self.assertEqual(job_tasks.tasks[0].args[2], [self.root])
 
     def test_worker_bounds_parallel_files_and_persists_input_order(self):
         paths = self._media_paths(6)
@@ -91,6 +108,7 @@ class ScanConcurrencyTests(unittest.TestCase):
         }
         with (
             patch("app.main.SCAN_WORKERS", 3),
+            patch("app.main.scan_media", return_value=paths),
             patch("app.main.load_provider_settings", return_value={
                 "api_key": "test-key", "username": "", "password": "",
             }),
@@ -98,7 +116,7 @@ class ScanConcurrencyTests(unittest.TestCase):
             patch("app.main.inspect_media", side_effect=inspect),
             patch("app.main.stage_candidates", side_effect=stage),
         ):
-            _scan_worker(job["id"], self.root, paths)
+            _scan_worker(job["id"], self.root, [self.root])
 
         result = get_job(job["id"])
         self.assertEqual(result["status"], "completed")
@@ -126,10 +144,11 @@ class ScanConcurrencyTests(unittest.TestCase):
 
         with (
             patch("app.main.SCAN_WORKERS", 2),
+            patch("app.main.scan_media", return_value=paths),
             patch("app.main.load_provider_settings", return_value={"api_key": ""}),
             patch("app.main._scan_one_file", side_effect=process),
         ):
-            _scan_worker(job["id"], self.root, paths)
+            _scan_worker(job["id"], self.root, [self.root])
 
         self.assertEqual(get_job(job["id"])["status"], "cancelled")
         self.assertEqual(len(calls), 2)
