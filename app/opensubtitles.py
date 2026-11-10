@@ -15,13 +15,13 @@ from langdetect import DetectorFactory, detect_langs
 from langdetect.lang_detect_exception import LangDetectException
 import struct
 import time
-from threading import Lock
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 API_BASE_URL = "https://api.opensubtitles.com/api/v1"
