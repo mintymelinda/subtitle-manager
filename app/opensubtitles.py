@@ -15,6 +15,7 @@ from langdetect import DetectorFactory, detect_langs
 from langdetect.lang_detect_exception import LangDetectException
 import struct
 import time
+from threading import Lock
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -161,6 +162,8 @@ class OpenSubtitlesClient:
         self._opener = opener or urllib.request.urlopen
         self._sleep = sleeper
         self.remaining_downloads: int | None = None
+        self._login_lock = Lock()
+        self._download_quota_lock = Lock()
 
     def _headers(self, token: str | None = None) -> dict[str, str]:
         headers = {
@@ -237,16 +240,26 @@ class OpenSubtitlesClient:
     def login(self) -> str | None:
         if not self.username or not self.password:
             return None
-        if self._token:
-            return self._token
-        result = self._json_request(
-            "/login", body={"username": self.username, "password": self.password}
-        )
-        token = result.get("token")
-        if not isinstance(token, str) or not token:
-            raise OpenSubtitlesError("OpenSubtitles login did not return an access token.")
-        self._token = token
-        return token
+        with self._login_lock:
+            if self._token:
+                return self._token
+            result = self._json_request(
+                "/login", body={"username": self.username, "password": self.password}
+            )
+            token = result.get("token")
+            if not isinstance(token, str) or not token:
+                raise OpenSubtitlesError("OpenSubtitles login did not return an access token.")
+            self._token = token
+            return token
+
+    def download_if_available(self, file_id: int) -> tuple[str, bytes, int | None] | None:
+        """Reserve a known account download slot before starting a concurrent request."""
+        with self._download_quota_lock:
+            if self.remaining_downloads == 0:
+                return None
+            if self.remaining_downloads is not None:
+                self.remaining_downloads -= 1
+        return self.download(file_id)
 
     def search(self, media_path: Path, metadata: dict[str, Any] | None = None,
                *, languages: list[str] | None = None) -> list[dict[str, Any]]:
@@ -414,7 +427,13 @@ class OpenSubtitlesClient:
         if extension == ".sup" and len(payload) < 100:
             raise OpenSubtitlesError("Downloaded bitmap subtitle file is unexpectedly small.")
         remaining = result.get("remaining")
-        self.remaining_downloads = int(remaining) if remaining is not None else None
+        if remaining is not None:
+            reported_remaining = int(remaining)
+            with self._download_quota_lock:
+                self.remaining_downloads = (
+                    reported_remaining if self.remaining_downloads is None
+                    else min(self.remaining_downloads, reported_remaining)
+                )
         return suggested_name, payload, self.remaining_downloads
 
     @staticmethod
