@@ -98,7 +98,7 @@ class ScanConcurrencyTests(unittest.TestCase):
             patch("app.main.inspect_media", side_effect=inspect),
             patch("app.main.stage_candidates", side_effect=stage),
         ):
-            _scan_worker(job["id"], self.root, paths)
+            _scan_worker(job["id"], self.root, [self.root])
 
         result = get_job(job["id"])
         self.assertEqual(result["status"], "completed")
