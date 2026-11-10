@@ -11,7 +11,7 @@ from app.config import settings
 from app.observability import configure_logging, logger, timed_stage
 
 from app.database import (
-    initialize, record_scan, save_candidate, mark_candidate_staged,
+    initialize, record_scan, get_cached_scan, save_candidate, mark_candidate_staged,
     mark_candidate_error, list_candidates, set_candidate_decision,
     get_candidate, claim_candidate_patch, finish_candidate_patch, recover_interrupted_patches,
     create_job, start_job, update_job_progress, record_job_item, finish_job,
@@ -116,7 +116,10 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                    "candidate_limit": limit, "selected_count": rank},
         )
         row = save_candidate(
-            relative_media_path, stat_result.st_size, stat_result.st_mtime, candidate
+            relative_media_path, stat_result.st_size, stat_result.st_mtime, candidate,
+            media_modified_ns=stat_result.st_mtime_ns,
+            media_device=stat_result.st_dev,
+            media_inode=stat_result.st_ino,
         )
         status = row["status"]
         logger.debug(
@@ -1241,6 +1244,16 @@ def inject_candidate(candidate_id: int, request: InjectRequest, background_tasks
             "test_mode":settings.test_mode}
 
 
+def _scan_file_identity(stat_result) -> tuple[int, int, int, int]:
+    """Identity fields used to invalidate cached inspection results."""
+    return (
+        stat_result.st_size,
+        stat_result.st_mtime_ns,
+        stat_result.st_dev,
+        stat_result.st_ino,
+    )
+
+
 def _scan_worker(job_id: int, root: Path, paths: list[Path], target_languages: list[str] | None = None):
     start_job(job_id)
     try:
@@ -1267,13 +1280,41 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path], target_languages: l
             record_job_item(job_id, media_path=media_relative_path, status="running", phase="inspecting")
             try:
                 stat_result = path.stat()
-                with timed_stage("media_inspection", job_id=job_id,
-                                 media_path=media_relative_path,
-                                 file_size_bytes=stat_result.st_size):
-                    details = inspect_media(path)
-                with timed_stage("scan_record_persistence", job_id=job_id,
-                                 media_path=media_relative_path):
-                    record_scan(media_relative_path, stat_result.st_size, stat_result.st_mtime, details)
+                details = get_cached_scan(media_relative_path, stat_result)
+                if details is not None:
+                    # Recheck after the database lookup so a concurrent replacement
+                    # cannot make us reuse an inspection for the previous file.
+                    current_stat = path.stat()
+                    if _scan_file_identity(current_stat) != _scan_file_identity(stat_result):
+                        stat_result = current_stat
+                        details = None
+                if details is None:
+                    with timed_stage("media_inspection", job_id=job_id,
+                                     media_path=media_relative_path,
+                                     file_size_bytes=stat_result.st_size):
+                        details = inspect_media(path)
+                    inspected_stat = path.stat()
+                    if _scan_file_identity(inspected_stat) != _scan_file_identity(stat_result):
+                        raise OSError("Media file changed during inspection; retry the scan.")
+                    stat_result = inspected_stat
+                    with timed_stage("scan_record_persistence", job_id=job_id,
+                                     media_path=media_relative_path):
+                        record_scan(
+                            media_relative_path, stat_result.st_size, stat_result.st_mtime,
+                            details, modified_ns=stat_result.st_mtime_ns,
+                            device=stat_result.st_dev, inode=stat_result.st_ino,
+                        )
+                    logger.info(
+                        "media_inspection_cache_miss",
+                        extra={"event": "media_inspection_cache_miss", "job_id": job_id,
+                               "media_path": media_relative_path, "phase": "inspection"},
+                    )
+                else:
+                    logger.info(
+                        "media_inspection_cache_hit",
+                        extra={"event": "media_inspection_cache_hit", "job_id": job_id,
+                               "media_path": media_relative_path, "phase": "inspection"},
+                    )
                 summary = {"status":"not_configured","found":0,"staged":0,"candidates":[]}
                 phase = "inspected"
                 if target_languages == ["en"] and details["has_verified_english_subtitle"]:
