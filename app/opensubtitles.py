@@ -7,12 +7,6 @@ from __future__ import annotations
 
 import json
 import re
-
-from app.observability import logger
-from app.languages import normalize_languages, canonical_language, language_matches
-
-from langdetect import DetectorFactory, detect_langs
-from langdetect.lang_detect_exception import LangDetectException
 import struct
 import time
 import urllib.error
@@ -21,7 +15,14 @@ import urllib.request
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from threading import Lock
 from typing import Any
+
+from langdetect import DetectorFactory, detect_langs
+from langdetect.lang_detect_exception import LangDetectException
+
+from app.languages import normalize_languages, canonical_language, language_matches
+from app.observability import logger
 
 API_BASE_URL = "https://api.opensubtitles.com/api/v1"
 USER_AGENT = "SubtitleManager v0.1.0"
@@ -161,6 +162,9 @@ class OpenSubtitlesClient:
         self._opener = opener or urllib.request.urlopen
         self._sleep = sleeper
         self.remaining_downloads: int | None = None
+        self._login_lock = Lock()
+        self._download_quota_lock = Lock()
+        self._download_probe_lock = Lock()
 
     def _headers(self, token: str | None = None) -> dict[str, str]:
         headers = {
@@ -237,16 +241,45 @@ class OpenSubtitlesClient:
     def login(self) -> str | None:
         if not self.username or not self.password:
             return None
-        if self._token:
-            return self._token
-        result = self._json_request(
-            "/login", body={"username": self.username, "password": self.password}
-        )
-        token = result.get("token")
-        if not isinstance(token, str) or not token:
-            raise OpenSubtitlesError("OpenSubtitles login did not return an access token.")
-        self._token = token
-        return token
+        with self._login_lock:
+            if self._token:
+                return self._token
+            result = self._json_request(
+                "/login", body={"username": self.username, "password": self.password}
+            )
+            token = result.get("token")
+            if not isinstance(token, str) or not token:
+                raise OpenSubtitlesError("OpenSubtitles login did not return an access token.")
+            self._token = token
+            return token
+
+    def download_if_available(self, file_id: int) -> tuple[str, bytes, int | None] | None:
+        """Reserve quota safely while allowing concurrent downloads once known."""
+        with self._download_quota_lock:
+            if self.remaining_downloads is not None:
+                if self.remaining_downloads == 0:
+                    return None
+                self.remaining_downloads -= 1
+                quota_known = True
+            else:
+                quota_known = False
+        if quota_known:
+            return self.download(file_id)
+
+        # Until the API reports the account's remaining quota, permit only one
+        # in-flight download. Later calls can reserve known slots concurrently.
+        with self._download_probe_lock:
+            with self._download_quota_lock:
+                if self.remaining_downloads is not None:
+                    if self.remaining_downloads == 0:
+                        return None
+                    self.remaining_downloads -= 1
+                    quota_known = True
+                else:
+                    quota_known = False
+            if not quota_known:
+                return self.download(file_id)
+        return self.download(file_id)
 
     def search(self, media_path: Path, metadata: dict[str, Any] | None = None,
                *, languages: list[str] | None = None) -> list[dict[str, Any]]:
@@ -414,7 +447,13 @@ class OpenSubtitlesClient:
         if extension == ".sup" and len(payload) < 100:
             raise OpenSubtitlesError("Downloaded bitmap subtitle file is unexpectedly small.")
         remaining = result.get("remaining")
-        self.remaining_downloads = int(remaining) if remaining is not None else None
+        if remaining is not None:
+            reported_remaining = int(remaining)
+            with self._download_quota_lock:
+                self.remaining_downloads = (
+                    reported_remaining if self.remaining_downloads is None
+                    else min(self.remaining_downloads, reported_remaining)
+                )
         return suggested_name, payload, self.remaining_downloads
 
     @staticmethod
