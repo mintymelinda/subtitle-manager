@@ -157,7 +157,9 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                         assessment = assess_subtitle_payload(
                             file_name, payload, expected_language=candidate["language"]
                         )
-                if status != "download_quota_reached":
+                if should_cancel is not None and should_cancel():
+                    status = "cancelled"
+                if status not in {"download_quota_reached", "cancelled"}:
                     detected_language = assessment.get("content_language")
                     if detected_language and not language_matches(detected_language, candidate["language"]):
                         mark_candidate_error(
@@ -1325,6 +1327,12 @@ def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
                        "media_path": media_relative_path, "phase": "inspection"},
             )
 
+        if not _scan_job_is_running(job_id):
+            return {
+                "media_path": media_relative_path,
+                "status": "cancelled",
+                "phase": "cancelled",
+            }
         summary = {"status": "not_configured", "found": 0, "staged": 0, "candidates": []}
         phase = "inspected"
         if target_languages == ["en"] and details["has_verified_english_subtitle"]:
