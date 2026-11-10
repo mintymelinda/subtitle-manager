@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from app.observability import timed_stage
+from app.observability import JsonFormatter, timed_stage
 
 
 class StageTimingTests(unittest.TestCase):
@@ -10,7 +10,7 @@ class StageTimingTests(unittest.TestCase):
             with timed_stage("media_probe", media_path="example.mkv", bytes_processed=123):
                 pass
 
-        event = json.loads(captured.output[0].split(":INFO:subtitle_manager:", 1)[-1])
+        event = json.loads(JsonFormatter().format(captured.records[0]))
         self.assertEqual(event["event"], "stage_timing")
         self.assertEqual(event["stage"], "media_probe")
         self.assertGreaterEqual(event["elapsed_ms"], 0)
