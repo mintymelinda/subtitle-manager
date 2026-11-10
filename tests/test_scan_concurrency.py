@@ -108,6 +108,7 @@ class ScanConcurrencyTests(unittest.TestCase):
         }
         with (
             patch("app.main.SCAN_WORKERS", 3),
+            patch("app.main.scan_media", return_value=paths),
             patch("app.main.load_provider_settings", return_value={
                 "api_key": "test-key", "username": "", "password": "",
             }),
@@ -143,6 +144,7 @@ class ScanConcurrencyTests(unittest.TestCase):
 
         with (
             patch("app.main.SCAN_WORKERS", 2),
+            patch("app.main.scan_media", return_value=paths),
             patch("app.main.load_provider_settings", return_value={"api_key": ""}),
             patch("app.main._scan_one_file", side_effect=process),
         ):
