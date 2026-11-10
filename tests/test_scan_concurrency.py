@@ -146,7 +146,7 @@ class ScanConcurrencyTests(unittest.TestCase):
             patch("app.main.load_provider_settings", return_value={"api_key": ""}),
             patch("app.main._scan_one_file", side_effect=process),
         ):
-            _scan_worker(job["id"], self.root, paths)
+            _scan_worker(job["id"], self.root, [self.root])
 
         self.assertEqual(get_job(job["id"])["status"], "cancelled")
         self.assertEqual(len(calls), 2)
