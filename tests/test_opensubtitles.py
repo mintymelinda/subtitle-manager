@@ -182,6 +182,31 @@ class OpenSubtitlesTests(unittest.TestCase):
         self.assertEqual(assess_subtitle_payload("candidate.srt", b"Hi")["content_status"], "unknown")
         self.assertEqual(assess_subtitle_payload("candidate.sup", b"binary")["content_status"], "unknown")
 
+    def test_initial_download_quota_probe_is_serialized(self):
+        client = OpenSubtitlesClient("test-secret")
+        active = 0
+        peak = 0
+        import threading
+        import time
+        lock = threading.Lock()
+
+        def download(file_id):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.02)
+            with lock:
+                active -= 1
+            return f"{file_id}.srt", b"subtitle", None
+
+        with patch.object(client, "download", side_effect=download):
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                results = list(executor.map(client.download_if_available, range(4)))
+
+        self.assertEqual(len(results), 4)
+        self.assertEqual(peak, 1)
+
     def test_concurrent_download_reservations_never_exceed_known_quota(self):
         client = OpenSubtitlesClient("test-secret")
         client.remaining_downloads = 2
