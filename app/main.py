@@ -275,7 +275,7 @@ let activeScanJobId=null;let activeTrackedJobId=null;
 function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
 function line(parent,label,value){const p=el("p");p.append(el("strong",label+": "),document.createTextNode(value===null||value===undefined?"Unknown":String(value)));parent.append(p);}
 function streams(value){if(!Array.isArray(value)||!value.length)return "";return value.map(s=>[s.codec,s.language,s.title].filter(Boolean).join(" · ")||JSON.stringify(s)).join("; ");}
-function renderExistingSubtitleControls(card,candidate){
+function renderExistingSubtitleControls(card,candidate,allCandidates){
     const tracks=candidate.inspection?.subtitle_streams||[];
     const fieldset=el("fieldset",undefined,"existing-subtitle-tracks");
     const legend=el("legend","Existing subtitle tracks — included by default");
@@ -287,6 +287,64 @@ function renderExistingSubtitleControls(card,candidate){
         checkbox.value=String(track.index);checkbox.dataset.subtitleIndex=String(track.index);
         const description=["Stream "+track.index,track.language||"und",track.codec||"unknown codec",track.title].filter(Boolean).join(" · ");
         label.append(checkbox,document.createTextNode(description));fieldset.append(label);
+    }
+    if(!candidate.is_non_candidate){
+        const automaticLabel=el("label",undefined,"existing-subtitle-track");
+        const automaticCheckbox=document.createElement("input");
+        automaticCheckbox.type="checkbox";automaticCheckbox.checked=false;
+        automaticCheckbox.setAttribute("aria-label","Select None — enable automatic subtitle cleanup");
+        const automaticText=document.createTextNode("Select None — prepare automatic cleanup");
+        automaticLabel.append(automaticCheckbox,automaticText);fieldset.append(automaticLabel);
+        const run=el("button","Run automatic cleanup");
+        run.type="button";run.hidden=true;run.disabled=false;
+        run.setAttribute("aria-label","Run automatic subtitle cleanup for "+candidate.file_name);
+        const result=el("p","", "automatic-cleanup-message");result.setAttribute("aria-live","polite");
+        automaticCheckbox.addEventListener("change",()=>{
+            const checked=automaticCheckbox.checked;
+            for(const input of fieldset.querySelectorAll(".existing-subtitle-track input[type='checkbox']")){
+                if(input!==automaticCheckbox)input.checked=!checked;
+            }
+            run.hidden=!checked;
+            result.textContent="";
+        });
+        run.addEventListener("click",async()=>{
+            if(!automaticCheckbox.checked||run.disabled)return;
+            const options=allCandidates.filter(item=>item.media_relative_path===candidate.media_relative_path
+                &&item.status==="staged"&&!item.is_stale
+                &&item.patch_status!=="patched"&&item.patch_status!=="running"&&item.patch_status!=="interrupted"
+                &&["pending","approved"].includes(item.review_decision));
+            const first=options[0];
+            if(!first){result.textContent="No valid staged subtitle candidate is available. Rescan or review candidates first.";return;}
+            const mode=document.querySelector("#mode").textContent;
+            const warning=mode==="TEST MODE"
+                ?"TEST MODE will replace this MKV and retain a recovery copy."
+                :"LIVE MODE will replace this MKV; its recovery copy is deleted only after post-replacement verification.";
+            if(!confirm("Run automatic cleanup for "+candidate.file_name+"? The first valid subtitle candidate (“"+first.file_name+"”) will be injected, all existing subtitle tracks will be removed, and no further warnings or prompts will appear. "+warning))return;
+            run.disabled=true;automaticCheckbox.disabled=true;
+            result.textContent="Running automatic cleanup…";
+            try{
+                if(first.review_decision!=="approved"){
+                    const approval=await fetch("/api/candidates/"+first.id+"/decision",{
+                        method:"POST",headers:{"Content-Type":"application/json"},
+                        body:JSON.stringify({decision:"approved"})
+                    });
+                    const approved=await approval.json();
+                    if(!approval.ok)throw Error(approved.detail||approval.statusText);
+                }
+                const response=await fetch("/api/candidates/"+first.id+"/inject",{
+                    method:"POST",headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify({confirm:true,keep_subtitle_indices:[]})
+                });
+                const injected=await response.json();
+                if(!response.ok)throw Error(injected.detail||response.statusText);
+                result.textContent="Automatic cleanup started with "+first.file_name+".";
+                trackJob(injected.job_id);
+            }catch(error){
+                result.textContent="Automatic cleanup could not start: "+error.message;
+                run.disabled=false;automaticCheckbox.disabled=false;
+            }
+        });
+        card.append(run,result);
     }
     card.append(fieldset);
 }
@@ -380,7 +438,7 @@ function renderCandidates(items) {
             selectBox.addEventListener("change",()=>{if(selectBox.checked)selectedMediaPaths.add(c.media_relative_path);else selectedMediaPaths.delete(c.media_relative_path);updateBatchControls();});
             selectLabel.append(selectBox,document.createTextNode("Select edit"));heading.append(title,selectLabel);card.append(heading);
             card.append(el("p","Scanned file · not eligible for subtitle injection"));
-            line(card,"Existing audio tracks",streams(c.inspection?.audio_streams));renderExistingSubtitleControls(card,c);
+            line(card,"Existing audio tracks",streams(c.inspection?.audio_streams));renderExistingSubtitleControls(card,c,items);
             if(c.is_stale)card.append(el("p","This file changed after scanning. Rescan before editing.","warning"));
             else{const edit=el("button","Apply existing-track edits");edit.addEventListener("click",()=>editScannedMedia(c.media_relative_path,edit));card.append(edit);}
             candidateList.append(card);continue;
@@ -426,7 +484,7 @@ function renderCandidates(items) {
         line(details, "Existing audio tracks", streams(c.inspection?.audio_streams));
         line(details, "Existing subtitle tracks", streams(c.inspection?.subtitle_streams));
         card.append(details);
-        renderExistingSubtitleControls(card,c);
+        renderExistingSubtitleControls(card,c,items);
 
         if (c.is_stale) card.append(el("p", "This candidate is stale: the media file changed after discovery. Rescan before reviewing.", "warning"));
         if (c.patch_status === "interrupted") card.append(el("p", "An earlier injection was interrupted. Inspect the media file and retained recovery copy manually before proceeding.", "warning"));
