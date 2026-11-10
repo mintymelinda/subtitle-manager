@@ -3,7 +3,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from app.observability import timed_stage
+from app.observability import safe_file_size, timed_stage
 
 from langdetect import DetectorFactory, detect_langs
 from langdetect.lang_detect_exception import LangDetectException
@@ -62,7 +62,7 @@ def _subtitle_content_language(path: Path, stream_index: int, codec: str) -> dic
     try:
         with timed_stage("subtitle_stream_decode", media_path=str(path),
                          stream_index=stream_index, tool="ffmpeg",
-                         file_size_bytes=path.stat().st_size):
+                         file_size_bytes=safe_file_size(path)):
             result = subprocess.run(
                 ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path),
                  "-map", f"0:{stream_index}", "-f", "srt", "-"],
