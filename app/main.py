@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Lock
 import os
 import subprocess
 import uuid
@@ -1275,7 +1276,7 @@ def _scan_job_is_running(job_id: int) -> bool:
 
 def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
                    client: OpenSubtitlesClient | None,
-                   target_languages: list[str]) -> dict | None:
+                   target_languages: list[str], inspection_lock: Lock) -> dict | None:
     """Inspect and discover candidates for one file; safe to run in a worker thread."""
     media_relative_path = str(path.relative_to(media_root))
     if not _scan_job_is_running(job_id):
@@ -1306,14 +1307,17 @@ def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
                 "phase": "cancelled",
             }
         if details is None:
-            with timed_stage("media_inspection", job_id=job_id,
-                             media_path=media_relative_path,
-                             file_size_bytes=stat_result.st_size):
-                details = inspect_media(path)
-            inspected_stat = path.stat()
-            if _scan_file_identity(inspected_stat) != _scan_file_identity(stat_result):
-                raise OSError("Media file changed during inspection; retry the scan.")
-            stat_result = inspected_stat
+            # Keep FFmpeg/FFprobe work serial on modest hosts while allowing
+            # provider discovery and staging for other files to overlap.
+            with inspection_lock:
+                with timed_stage("media_inspection", job_id=job_id,
+                                 media_path=media_relative_path,
+                                 file_size_bytes=stat_result.st_size):
+                    details = inspect_media(path)
+                inspected_stat = path.stat()
+                if _scan_file_identity(inspected_stat) != _scan_file_identity(stat_result):
+                    raise OSError("Media file changed during inspection; retry the scan.")
+                stat_result = inspected_stat
             with timed_stage("scan_record_persistence", job_id=job_id,
                              media_path=media_relative_path):
                 record_scan(
@@ -1416,6 +1420,7 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path],
             if provider["api_key"] else None
         )
         worker_count = max(1, SCAN_WORKERS)
+        inspection_lock = Lock()
         completed = succeeded = failed = 0
         update_job_progress(job_id, phase="inspecting", total=len(paths))
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="media-scan") as executor:
@@ -1448,7 +1453,8 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path],
                     )
                 futures = [
                     executor.submit(
-                        _scan_one_file, job_id, root, media_root, path, client, target_languages
+                        _scan_one_file, job_id, root, media_root, path,
+                        client, target_languages, inspection_lock
                     )
                     for path in valid_paths
                 ]
