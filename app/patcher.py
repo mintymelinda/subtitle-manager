@@ -10,16 +10,20 @@ import tempfile
 import uuid
 from pathlib import Path
 
+from app.observability import timed_stage
+
 SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".sup", ".sub"}
 
 
 def _probe(path: Path) -> dict:
-    result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries",
-         "format=format_name:stream=index,codec_type,codec_name,width,height,channels,sample_rate,channel_layout:stream_tags=language,language_ietf",
-         "-of", "json", str(path)],
-        check=True, capture_output=True, text=True, timeout=90
-    )
+    with timed_stage("injection_ffprobe", media_path=str(path), tool="ffprobe",
+                     file_size_bytes=path.stat().st_size):
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "format=format_name:stream=index,codec_type,codec_name,width,height,channels,sample_rate,channel_layout:stream_tags=language,language_ietf",
+             "-of", "json", str(path)],
+            check=True, capture_output=True, text=True, timeout=90
+        )
     return json.loads(result.stdout or "{}")
 
 
@@ -196,13 +200,16 @@ def _patch_mkv_unlocked(source: Path, subtitle: Path | None, *, approved: bool, 
     replaced = False
 
     try:
-        shutil.copy2(source, backup)
+        with timed_stage("injection_recovery_copy", media_path=str(source),
+                         bytes_processed=source.stat().st_size):
+            shutil.copy2(source, backup)
         if _snapshot(source) != original_snapshot:
             raise RuntimeError("Source media changed while the recovery copy was being created")
-        mux_info = subprocess.run(
-            ["mkvmerge", "-J", str(source)], check=True, capture_output=True,
-            text=True, timeout=90,
-        )
+        with timed_stage("injection_mkvmerge_inspection", media_path=str(source), tool="mkvmerge"):
+            mux_info = subprocess.run(
+                ["mkvmerge", "-J", str(source)], check=True, capture_output=True,
+                text=True, timeout=90,
+            )
         mux_tracks = [track for track in json.loads(mux_info.stdout or "{}").get("tracks", [])
                       if track.get("type") == "subtitles"]
         if len(mux_tracks) != len(subtitle_streams):
@@ -217,13 +224,17 @@ def _patch_mkv_unlocked(source: Path, subtitle: Path | None, *, approved: bool, 
         command.append(str(source))
         if subtitle is not None:
             command.extend(["--language", f"0:{target_language}", str(subtitle)])
-        subprocess.run(command, check=True, capture_output=True, text=True, timeout=3600)
+        with timed_stage("injection_remux", media_path=str(source), tool="mkvmerge",
+                         bytes_processed=source.stat().st_size):
+            subprocess.run(command, check=True, capture_output=True, text=True, timeout=3600)
         if not working.is_file() or working.stat().st_size == 0:
             raise RuntimeError("MKVToolNix did not produce a valid working file")
 
-        candidate = _probe(working)
-        _validate_streams(before, candidate, working, list(selected_indices), target_language,
-                          subtitle_added=subtitle is not None)
+        with timed_stage("injection_candidate_validation", media_path=str(source),
+                         file_size_bytes=working.stat().st_size):
+            candidate = _probe(working)
+            _validate_streams(before, candidate, working, list(selected_indices), target_language,
+                              subtitle_added=subtitle is not None)
         with working.open("rb") as handle:
             os.fsync(handle.fileno())
         _preserve_metadata(source, working)
@@ -237,9 +248,11 @@ def _patch_mkv_unlocked(source: Path, subtitle: Path | None, *, approved: bool, 
         _fsync_directory(source.parent)
 
         try:
-            final = _probe(source)
-            _validate_streams(before, final, source, list(selected_indices), target_language,
-                              subtitle_added=subtitle is not None)
+            with timed_stage("injection_post_replace_validation", media_path=str(source),
+                             file_size_bytes=source.stat().st_size):
+                final = _probe(source)
+                _validate_streams(before, final, source, list(selected_indices), target_language,
+                                  subtitle_added=subtitle is not None)
             final_stat = source.stat()
             original_stat = backup.stat()
             if final_stat.st_mode & 0o7777 != original_stat.st_mode & 0o7777:
