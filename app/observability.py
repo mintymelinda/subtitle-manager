@@ -60,6 +60,14 @@ def configure_logging(level: str = "INFO"):
 logger = logging.getLogger("subtitle_manager")
 
 
+def safe_file_size(path):
+    """Return a file size for telemetry when available, without affecting processing."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
 @contextmanager
 def timed_stage(stage: str, **context):
     """Log elapsed time for one processing stage without changing its behavior."""
