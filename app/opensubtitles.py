@@ -164,6 +164,7 @@ class OpenSubtitlesClient:
         self.remaining_downloads: int | None = None
         self._login_lock = Lock()
         self._download_quota_lock = Lock()
+        self._download_probe_lock = Lock()
 
     def _headers(self, token: str | None = None) -> dict[str, str]:
         headers = {
@@ -253,12 +254,31 @@ class OpenSubtitlesClient:
             return token
 
     def download_if_available(self, file_id: int) -> tuple[str, bytes, int | None] | None:
-        """Reserve a known account download slot before starting a concurrent request."""
+        """Reserve quota safely while allowing concurrent downloads once known."""
         with self._download_quota_lock:
-            if self.remaining_downloads == 0:
-                return None
             if self.remaining_downloads is not None:
+                if self.remaining_downloads == 0:
+                    return None
                 self.remaining_downloads -= 1
+                quota_known = True
+            else:
+                quota_known = False
+        if quota_known:
+            return self.download(file_id)
+
+        # Until the API reports the account's remaining quota, permit only one
+        # in-flight download. Later calls can reserve known slots concurrently.
+        with self._download_probe_lock:
+            with self._download_quota_lock:
+                if self.remaining_downloads is not None:
+                    if self.remaining_downloads == 0:
+                        return None
+                    self.remaining_downloads -= 1
+                    quota_known = True
+                else:
+                    quota_known = False
+            if not quota_known:
+                return self.download(file_id)
         return self.download(file_id)
 
     def search(self, media_path: Path, metadata: dict[str, Any] | None = None,
