@@ -55,7 +55,8 @@ class ScanConcurrencyTests(unittest.TestCase):
         active = 0
         peak = 0
 
-        def process(_job_id, _root, media_root, path, _client, _languages):
+        def stage(_client, path, _media_root, _stat, _metadata, _languages,
+                  should_cancel=None):
             nonlocal active, peak
             with lock:
                 active += 1
@@ -63,12 +64,27 @@ class ScanConcurrencyTests(unittest.TestCase):
             time.sleep(0.04)
             with lock:
                 active -= 1
-            return self._completed_result(media_root, path)
+            self.assertFalse(should_cancel())
+            return {
+                "status": "no_candidates",
+                "found": 0,
+                "staged": 0,
+                "candidates": [],
+            }
 
+        inspection = {
+            "has_verified_english_subtitle": False,
+            "metadata": {},
+            "subtitle_streams": [],
+        }
         with (
             patch("app.main.SCAN_WORKERS", 3),
-            patch("app.main.load_provider_settings", return_value={"api_key": ""}),
-            patch("app.main._scan_one_file", side_effect=process),
+            patch("app.main.load_provider_settings", return_value={
+                "api_key": "test-key", "username": "", "password": "",
+            }),
+            patch("app.main.OpenSubtitlesClient", return_value=object()),
+            patch("app.main.inspect_media", return_value=inspection),
+            patch("app.main.stage_candidates", side_effect=stage),
         ):
             _scan_worker(job["id"], self.root, paths)
 
