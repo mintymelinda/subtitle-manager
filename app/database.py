@@ -51,6 +51,9 @@ def initialize():
             relative_path TEXT NOT NULL UNIQUE,
             size INTEGER,
             modified_at REAL,
+            modified_ns INTEGER,
+            device INTEGER,
+            inode INTEGER,
             status TEXT NOT NULL DEFAULT 'scanned',
             last_scanned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             has_verified_english_subtitle INTEGER NOT NULL DEFAULT 0,
@@ -105,6 +108,12 @@ def initialize():
             db.execute("ALTER TABLE media_files ADD COLUMN has_verified_english_subtitle INTEGER NOT NULL DEFAULT 0")
         if "inspection_json" not in media_columns:
             db.execute("ALTER TABLE media_files ADD COLUMN inspection_json TEXT NOT NULL DEFAULT '{}'")
+        if "modified_ns" not in media_columns:
+            db.execute("ALTER TABLE media_files ADD COLUMN modified_ns INTEGER")
+        if "device" not in media_columns:
+            db.execute("ALTER TABLE media_files ADD COLUMN device INTEGER")
+        if "inode" not in media_columns:
+            db.execute("ALTER TABLE media_files ADD COLUMN inode INTEGER")
         candidate_columns = {row[1] for row in db.execute("PRAGMA table_info(subtitle_candidates)")}
         if "review_decision" not in candidate_columns:
             db.execute("ALTER TABLE subtitle_candidates ADD COLUMN review_decision TEXT NOT NULL DEFAULT 'pending'")
@@ -163,21 +172,51 @@ def initialize():
         """)
 
 
+def get_cached_scan(relative_path: str, stat_result) -> dict | None:
+    """Return a cached media inspection only when the filesystem identity is unchanged."""
+    with connect() as db:
+        row = db.execute(
+            """SELECT inspection_json FROM media_files
+               WHERE relative_path=? AND size=? AND modified_ns=? AND device=? AND inode=?""",
+            (relative_path, stat_result.st_size, stat_result.st_mtime_ns,
+             stat_result.st_dev, stat_result.st_ino),
+        ).fetchone()
+        if row is None:
+            return None
+        inspection_json = row["inspection_json"] or "{}"
+        try:
+            inspection = json.loads(inspection_json)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(inspection, dict) or not inspection:
+            return None
+        db.execute(
+            "UPDATE media_files SET last_scanned_at=CURRENT_TIMESTAMP WHERE relative_path=?",
+            (relative_path,),
+        )
+        return inspection
+
+
 def record_scan(relative_path: str, size: int | None, modified_at: float | None,
-                inspection: dict | None = None):
+                inspection: dict | None = None, *, modified_ns: int | None = None,
+                device: int | None = None, inode: int | None = None):
     with connect() as db:
         db.execute("""
             INSERT INTO media_files(
-                relative_path, size, modified_at, has_verified_english_subtitle, inspection_json
-            ) VALUES (?, ?, ?, ?, ?)
+                relative_path, size, modified_at, modified_ns, device, inode,
+                has_verified_english_subtitle, inspection_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(relative_path) DO UPDATE SET
                 size=excluded.size,
                 modified_at=excluded.modified_at,
+                modified_ns=excluded.modified_ns,
+                device=excluded.device,
+                inode=excluded.inode,
                 has_verified_english_subtitle=excluded.has_verified_english_subtitle,
                 inspection_json=excluded.inspection_json,
                 last_scanned_at=CURRENT_TIMESTAMP
         """, (
-            relative_path, size, modified_at,
+            relative_path, size, modified_at, modified_ns, device, inode,
             int(bool((inspection or {}).get("has_verified_english_subtitle"))),
             json.dumps(inspection or {}),
         ))
