@@ -52,6 +52,32 @@ class InspectionCacheTests(unittest.TestCase):
         changed_stat = media.stat()
         self.assertIsNone(get_cached_scan("movie.mkv", changed_stat))
 
+    def test_replaced_file_with_same_size_and_timestamp_is_a_cache_miss(self):
+        media = self.root / "replacement.mkv"
+        media.write_bytes(b"same-size")
+        original_stat = media.stat()
+        record_scan(
+            "replacement.mkv", original_stat.st_size, original_stat.st_mtime,
+            {"has_verified_english_subtitle": False},
+            modified_ns=original_stat.st_mtime_ns,
+            device=original_stat.st_dev,
+            inode=original_stat.st_ino,
+        )
+
+        replacement = self.root / "replacement.tmp"
+        replacement.write_bytes(b"same-size")
+        os.utime(
+            replacement,
+            ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+        )
+        os.replace(replacement, media)
+        replaced_stat = media.stat()
+
+        self.assertEqual(replaced_stat.st_size, original_stat.st_size)
+        self.assertEqual(replaced_stat.st_mtime_ns, original_stat.st_mtime_ns)
+        self.assertNotEqual(replaced_stat.st_ino, original_stat.st_ino)
+        self.assertIsNone(get_cached_scan("replacement.mkv", replaced_stat))
+
     def test_legacy_rows_without_filesystem_identity_are_cache_misses(self):
         media = self.root / "legacy.mkv"
         media.write_bytes(b"legacy")
