@@ -114,7 +114,7 @@ def inspect_media(path: Path) -> dict:
         "-of", "json", str(path)
     ]
     with timed_stage("media_ffprobe", media_path=str(path), tool="ffprobe",
-                     file_size_bytes=path.stat().st_size):
+                     file_size_bytes=safe_file_size(path)):
         result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=60)
     data = json.loads(result.stdout or "{}")
     streams = data.get("streams", [])
