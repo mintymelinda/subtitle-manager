@@ -116,7 +116,10 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                    "candidate_limit": limit, "selected_count": rank},
         )
         row = save_candidate(
-            relative_media_path, stat_result.st_size, stat_result.st_mtime, candidate
+            relative_media_path, stat_result.st_size, stat_result.st_mtime, candidate,
+            media_modified_ns=stat_result.st_mtime_ns,
+            media_device=stat_result.st_dev,
+            media_inode=stat_result.st_ino,
         )
         status = row["status"]
         logger.debug(
