@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -44,13 +45,12 @@ class InspectionCacheTests(unittest.TestCase):
 
         self.assertEqual(get_cached_scan("movie.mkv", original_stat), inspection)
 
-        changed_mtime = type(original_stat)(
-            original_stat.st_mode, original_stat.st_ino, original_stat.st_dev,
-            original_stat.st_nlink, original_stat.st_uid, original_stat.st_gid,
-            original_stat.st_size, original_stat.st_atime, original_stat.st_mtime + 1,
-            original_stat.st_ctime,
+        os.utime(
+            media,
+            ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns + 1_000_000_000),
         )
-        self.assertIsNone(get_cached_scan("movie.mkv", changed_mtime))
+        changed_stat = media.stat()
+        self.assertIsNone(get_cached_scan("movie.mkv", changed_stat))
 
     def test_legacy_rows_without_filesystem_identity_are_cache_misses(self):
         media = self.root / "legacy.mkv"
