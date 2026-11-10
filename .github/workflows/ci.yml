@@ -3,6 +3,13 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      profile_injection:
+        description: Run the real-media MKV injection profiler (requires tests/fixtures/injection/test.mkv)
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   test:
@@ -22,5 +29,15 @@ jobs:
         run: python -m compileall -q app tests
       - name: Run tests
         run: python -m unittest discover -s tests -v
+      - name: Profile real-media injection
+        if: github.event_name == 'workflow_dispatch' && inputs.profile_injection
+        env:
+          SUBTITLE_MANAGER_RUN_INJECTION_PROFILE: "1"
+        run: |
+          test -f tests/fixtures/injection/test.mkv || {
+            echo "::error::Missing tests/fixtures/injection/test.mkv. Add the profiling fixture to the selected branch."
+            exit 1
+          }
+          python -m unittest tests.test_injection_profile -v
       - name: Build Docker image
         run: docker build -t subtitle-manager:test .
