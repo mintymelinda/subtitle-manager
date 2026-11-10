@@ -54,6 +54,18 @@ class ScanConcurrencyTests(unittest.TestCase):
         lock = threading.Lock()
         active = 0
         peak = 0
+        inspecting = 0
+        inspection_peak = 0
+
+        def inspect(_path):
+            nonlocal inspecting, inspection_peak
+            with lock:
+                inspecting += 1
+                inspection_peak = max(inspection_peak, inspecting)
+            time.sleep(0.005)
+            with lock:
+                inspecting -= 1
+            return inspection
 
         def stage(_client, path, _media_root, _stat, _metadata, _languages,
                   should_cancel=None):
@@ -61,7 +73,7 @@ class ScanConcurrencyTests(unittest.TestCase):
             with lock:
                 active += 1
                 peak = max(peak, active)
-            time.sleep(0.04)
+            time.sleep(0.08)
             with lock:
                 active -= 1
             self.assertFalse(should_cancel())
@@ -83,7 +95,7 @@ class ScanConcurrencyTests(unittest.TestCase):
                 "api_key": "test-key", "username": "", "password": "",
             }),
             patch("app.main.OpenSubtitlesClient", return_value=object()),
-            patch("app.main.inspect_media", return_value=inspection),
+            patch("app.main.inspect_media", side_effect=inspect),
             patch("app.main.stage_candidates", side_effect=stage),
         ):
             _scan_worker(job["id"], self.root, paths)
@@ -91,6 +103,7 @@ class ScanConcurrencyTests(unittest.TestCase):
         result = get_job(job["id"])
         self.assertEqual(result["status"], "completed")
         self.assertEqual(peak, 3)
+        self.assertEqual(inspection_peak, 1)
         self.assertEqual(
             [item["media_path"] for item in result["items"]],
             [path.name for path in paths],
@@ -104,7 +117,7 @@ class ScanConcurrencyTests(unittest.TestCase):
         calls = []
         lock = threading.Lock()
 
-        def process(job_id, _root, media_root, path, _client, _languages):
+        def process(job_id, _root, media_root, path, _client, _languages, _inspection_lock):
             with lock:
                 calls.append(path.name)
             if path.name == paths[0].name:
