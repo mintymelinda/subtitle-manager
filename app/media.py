@@ -3,6 +3,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from app.observability import timed_stage
+
 from langdetect import DetectorFactory, detect_langs
 from langdetect.lang_detect_exception import LangDetectException
 
@@ -58,11 +60,14 @@ def _subtitle_content_language(path: Path, stream_index: int, codec: str) -> dic
     if codec not in TEXT_SUBTITLE_CODECS:
         return {"status": "unknown", "language": None, "confidence": None}
     try:
-        result = subprocess.run(
-            ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path),
-             "-map", f"0:{stream_index}", "-f", "srt", "-"],
-            check=True, capture_output=True, text=True, timeout=90
-        )
+        with timed_stage("subtitle_stream_decode", media_path=str(path),
+                         stream_index=stream_index, tool="ffmpeg",
+                         file_size_bytes=path.stat().st_size):
+            result = subprocess.run(
+                ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path),
+                 "-map", f"0:{stream_index}", "-f", "srt", "-"],
+                check=True, capture_output=True, text=True, timeout=90
+            )
         lines = [
             line.strip() for line in result.stdout.splitlines()
             if line.strip() and "-->" not in line and not line.strip().isdigit()
@@ -70,7 +75,9 @@ def _subtitle_content_language(path: Path, stream_index: int, codec: str) -> dic
         sample = " ".join(lines)[:12000]
         if len(sample) < 60:
             return {"status": "unknown", "language": None, "confidence": None}
-        prediction = detect_langs(sample)[0]
+        with timed_stage("subtitle_language_detection", media_path=str(path),
+                         stream_index=stream_index):
+            prediction = detect_langs(sample)[0]
         language = prediction.lang
         confidence = float(prediction.prob)
         if confidence < 0.80:
@@ -106,7 +113,9 @@ def inspect_media(path: Path) -> dict:
         "format=format_name,duration,size:format_tags:stream=index,codec_type,codec_name:stream_tags=language,title",
         "-of", "json", str(path)
     ]
-    result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=60)
+    with timed_stage("media_ffprobe", media_path=str(path), tool="ffprobe",
+                     file_size_bytes=path.stat().st_size):
+        result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=60)
     data = json.loads(result.stdout or "{}")
     streams = data.get("streams", [])
     subtitles = []
