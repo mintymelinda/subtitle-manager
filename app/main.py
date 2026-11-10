@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import os
 import subprocess
@@ -29,6 +30,9 @@ from app.provider_settings import (
 from app.languages import LANGUAGE_CODES, normalize_languages, language_matches
 
 app = FastAPI(title=settings.app_name)
+
+# Keep FFmpeg, provider requests, and SQLite writes bounded on modest hosts.
+SCAN_WORKERS = 3
 
 
 class ScanRequest(BaseModel):
@@ -80,8 +84,11 @@ def media_path_is_safe(path: Path, root: Path) -> bool:
 
 
 def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
-                     stat_result, metadata: dict, target_languages: list[str] | None = None) -> dict:
+                     stat_result, metadata: dict, target_languages: list[str] | None = None,
+                     should_cancel=None) -> dict:
     """Search and stage the top candidates outside the media mount."""
+    if should_cancel is not None and should_cancel():
+        return {"status": "cancelled", "found": 0, "staged": 0, "candidates": []}
     relative_media_path = str(path.relative_to(media_root))
     staging_root = Path(settings.subtitle_staging_path).resolve()
     if staging_root == media_root or staging_root.is_relative_to(media_root):
@@ -104,6 +111,9 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                "candidate_limit": limit, "remaining_count": max(0, len(candidates) - len(selected))},
     )
     for rank, candidate in enumerate(selected, start=1):
+        if should_cancel is not None and should_cancel():
+            summary["status"] = "cancelled"
+            break
         logger.debug(
             "subtitle_candidate_selected_for_download",
             extra={"event": "subtitle_candidate_selected_for_download",
@@ -135,17 +145,19 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
             "content_confidence": row.get("content_language_confidence"),
         }
         if status != "staged":
-            if client.remaining_downloads == 0:
-                status = "download_quota_reached"
-            else:
-                try:
-                    with timed_stage("candidate_download_and_assessment",
-                                     media_path=relative_media_path, candidate_id=row["id"],
-                                     tool="opensubtitles"):
-                        file_name, payload, remaining = client.download(candidate["file_id"])
+            try:
+                with timed_stage("candidate_download_and_assessment",
+                                 media_path=relative_media_path, candidate_id=row["id"],
+                                 tool="opensubtitles"):
+                    downloaded = client.download_if_available(candidate["file_id"])
+                    if downloaded is None:
+                        status = "download_quota_reached"
+                    else:
+                        file_name, payload, remaining = downloaded
                         assessment = assess_subtitle_payload(
                             file_name, payload, expected_language=candidate["language"]
                         )
+                if status != "download_quota_reached":
                     detected_language = assessment.get("content_language")
                     if detected_language and not language_matches(detected_language, candidate["language"]):
                         mark_candidate_error(
@@ -177,13 +189,13 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                         )
                         status = "staged"
                         logger.info("subtitle_candidate_staged", extra={"event":"subtitle_candidate_staged","candidate_id":row["id"],"media_path":relative_media_path,"phase":"download","status":"staged"})
-                except OpenSubtitlesError as exc:
-                    mark_candidate_error(row["id"], str(exc))
-                    status = "download_failed"
-                    logger.warning("subtitle_candidate_download_failed", extra={"event":"subtitle_candidate_download_failed","candidate_id":row["id"],"media_path":relative_media_path,"phase":"download","error_type":type(exc).__name__})
-                except OSError:
-                    mark_candidate_error(row["id"], "Could not write the staged subtitle file.")
-                    status = "download_failed"
+            except OpenSubtitlesError as exc:
+                mark_candidate_error(row["id"], str(exc))
+                status = "download_failed"
+                logger.warning("subtitle_candidate_download_failed", extra={"event":"subtitle_candidate_download_failed","candidate_id":row["id"],"media_path":relative_media_path,"phase":"download","error_type":type(exc).__name__})
+            except OSError:
+                mark_candidate_error(row["id"], "Could not write the staged subtitle file.")
+                status = "download_failed"
         if status == "staged":
             summary["staged"] += 1
         summary["candidates"].append({
@@ -1254,118 +1266,218 @@ def _scan_file_identity(stat_result) -> tuple[int, int, int, int]:
     )
 
 
-def _scan_worker(job_id: int, root: Path, paths: list[Path], target_languages: list[str] | None = None):
+def _scan_job_is_running(job_id: int) -> bool:
+    job_state = get_job(job_id)
+    return job_state is not None and job_state["status"] == "running"
+
+
+def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
+                   client: OpenSubtitlesClient | None,
+                   target_languages: list[str]) -> dict | None:
+    """Inspect and discover candidates for one file; safe to run in a worker thread."""
+    if not _scan_job_is_running(job_id) or not media_path_is_safe(path, root):
+        return None if not media_path_is_safe(path, root) else {
+            "media_path": str(path.relative_to(media_root)),
+            "status": "cancelled",
+            "phase": "cancelled",
+        }
+    media_relative_path = str(path.relative_to(media_root))
+    try:
+        stat_result = path.stat()
+        details = get_cached_scan(media_relative_path, stat_result)
+        if details is not None:
+            current_stat = path.stat()
+            if _scan_file_identity(current_stat) != _scan_file_identity(stat_result):
+                stat_result = current_stat
+                details = None
+        if details is None:
+            with timed_stage("media_inspection", job_id=job_id,
+                             media_path=media_relative_path,
+                             file_size_bytes=stat_result.st_size):
+                details = inspect_media(path)
+            inspected_stat = path.stat()
+            if _scan_file_identity(inspected_stat) != _scan_file_identity(stat_result):
+                raise OSError("Media file changed during inspection; retry the scan.")
+            stat_result = inspected_stat
+            with timed_stage("scan_record_persistence", job_id=job_id,
+                             media_path=media_relative_path):
+                record_scan(
+                    media_relative_path, stat_result.st_size, stat_result.st_mtime,
+                    details, modified_ns=stat_result.st_mtime_ns,
+                    device=stat_result.st_dev, inode=stat_result.st_ino,
+                )
+            logger.info(
+                "media_inspection_cache_miss",
+                extra={"event": "media_inspection_cache_miss", "job_id": job_id,
+                       "media_path": media_relative_path, "phase": "inspection"},
+            )
+        else:
+            logger.info(
+                "media_inspection_cache_hit",
+                extra={"event": "media_inspection_cache_hit", "job_id": job_id,
+                       "media_path": media_relative_path, "phase": "inspection"},
+            )
+
+        summary = {"status": "not_configured", "found": 0, "staged": 0, "candidates": []}
+        phase = "inspected"
+        if target_languages == ["en"] and details["has_verified_english_subtitle"]:
+            summary["status"] = "verified_english_present"
+            logger.info(
+                "candidate_discovery_skipped",
+                extra={"event": "candidate_discovery_skipped",
+                       "job_id": job_id, "media_path": media_relative_path,
+                       "phase": "discovery", "filter_reason": "verified_english_subtitle_present"},
+            )
+        elif client is not None:
+            if not _scan_job_is_running(job_id):
+                return {"media_path": media_relative_path, "status": "cancelled",
+                        "phase": "cancelled"}
+            phase = "discovery"
+            try:
+                with timed_stage("candidate_staging", job_id=job_id,
+                                 media_path=media_relative_path):
+                    summary = stage_candidates(
+                        client, path, media_root, stat_result,
+                        details.get("metadata") or {}, target_languages,
+                        should_cancel=lambda: not _scan_job_is_running(job_id),
+                    )
+            except OpenSubtitlesError as exc:
+                logger.warning(
+                    "opensubtitles_search_failed",
+                    extra={"event": "opensubtitles_search_failed", "job_id": job_id,
+                           "media_path": media_relative_path, "phase": "discovery",
+                           "error_type": type(exc).__name__},
+                )
+                summary = {"status": "provider_error", "found": 0, "staged": 0,
+                           "candidates": [], "error": str(exc)}
+            if summary.get("status") == "cancelled" or not _scan_job_is_running(job_id):
+                return {"media_path": media_relative_path, "status": "cancelled",
+                        "phase": "cancelled"}
+        else:
+            logger.info(
+                "candidate_discovery_skipped",
+                extra={"event": "candidate_discovery_skipped",
+                       "job_id": job_id, "media_path": media_relative_path,
+                       "phase": "discovery", "filter_reason": "provider_not_configured"},
+            )
+        return {
+            "media_path": media_relative_path,
+            "status": "completed",
+            "phase": phase,
+            "summary": summary,
+        }
+    except (OSError, subprocess.SubprocessError, ValueError, OpenSubtitlesError) as exc:
+        logger.exception(
+            "media_scan_failed",
+            extra={"event": "media_scan_failed", "job_id": job_id,
+                   "media_path": media_relative_path, "phase": "scan",
+                   "error_type": type(exc).__name__},
+        )
+        return {
+            "media_path": media_relative_path,
+            "status": "failed",
+            "phase": "scan",
+            "error": f"{type(exc).__name__}: {str(exc)[:400]}",
+        }
+
+
+def _scan_worker(job_id: int, root: Path, paths: list[Path],
+                 target_languages: list[str] | None = None):
     start_job(job_id)
     try:
-        job_state = get_job(job_id)
-        if job_state is None or job_state["status"] != "running":
+        if not _scan_job_is_running(job_id):
             return
-        update_job_progress(job_id, phase="inspecting", total=len(paths))
         target_languages = normalize_languages(target_languages)
-        client = None
+        media_root = Path(settings.media_root).resolve()
         provider = load_provider_settings()
-        if provider["api_key"]:
-            client = OpenSubtitlesClient(provider["api_key"], provider["username"], provider["password"])
+        client = (
+            OpenSubtitlesClient(provider["api_key"], provider["username"], provider["password"])
+            if provider["api_key"] else None
+        )
+        worker_count = max(1, SCAN_WORKERS)
         completed = succeeded = failed = 0
-        for path in paths:
-            job_state = get_job(job_id)
-            if job_state is None or job_state["status"] != "running":
-                logger.info("scan_job_cancelled", extra={"event":"scan_job_cancelled","job_id":job_id,"phase":"cancelled","status":"cancelled"})
-                return
-            if not media_path_is_safe(path, root):
-                continue
-            relative_path = str(path.relative_to(root))
-            media_relative_path = str(path.relative_to(Path(settings.media_root).resolve()))
-            update_job_progress(job_id, phase="inspecting", current_file=media_relative_path)
-            record_job_item(job_id, media_path=media_relative_path, status="running", phase="inspecting")
-            try:
-                stat_result = path.stat()
-                details = get_cached_scan(media_relative_path, stat_result)
-                if details is not None:
-                    # Recheck after the database lookup so a concurrent replacement
-                    # cannot make us reuse an inspection for the previous file.
-                    current_stat = path.stat()
-                    if _scan_file_identity(current_stat) != _scan_file_identity(stat_result):
-                        stat_result = current_stat
-                        details = None
-                if details is None:
-                    with timed_stage("media_inspection", job_id=job_id,
-                                     media_path=media_relative_path,
-                                     file_size_bytes=stat_result.st_size):
-                        details = inspect_media(path)
-                    inspected_stat = path.stat()
-                    if _scan_file_identity(inspected_stat) != _scan_file_identity(stat_result):
-                        raise OSError("Media file changed during inspection; retry the scan.")
-                    stat_result = inspected_stat
-                    with timed_stage("scan_record_persistence", job_id=job_id,
-                                     media_path=media_relative_path):
-                        record_scan(
-                            media_relative_path, stat_result.st_size, stat_result.st_mtime,
-                            details, modified_ns=stat_result.st_mtime_ns,
-                            device=stat_result.st_dev, inode=stat_result.st_ino,
+        update_job_progress(job_id, phase="inspecting", total=len(paths))
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="media-scan") as executor:
+            for offset in range(0, len(paths), worker_count):
+                if not _scan_job_is_running(job_id):
+                    logger.info(
+                        "scan_job_cancelled",
+                        extra={"event": "scan_job_cancelled", "job_id": job_id,
+                               "phase": "cancelled", "status": "cancelled"},
+                    )
+                    return
+                batch = paths[offset:offset + worker_count]
+                valid_paths = [path for path in batch if media_path_is_safe(path, root)]
+                if not valid_paths:
+                    continue
+                update_job_progress(
+                    job_id, phase="inspecting",
+                    current_file=valid_paths[0].relative_to(media_root).as_posix(),
+                )
+                for path in valid_paths:
+                    record_job_item(
+                        job_id, media_path=path.relative_to(media_root).as_posix(),
+                        status="running", phase="inspecting",
+                    )
+                futures = [
+                    executor.submit(
+                        _scan_one_file, job_id, root, media_root, path, client, target_languages
+                    )
+                    for path in valid_paths
+                ]
+                # Read results in input order: parallel execution does not reorder
+                # the scan's persisted job items or progress accounting.
+                results = [future.result() for future in futures]
+                for result in results:
+                    if result is None:
+                        continue
+                    media_relative_path = result["media_path"]
+                    if result["status"] == "completed":
+                        summary = result["summary"]
+                        record_job_item(
+                            job_id, media_path=media_relative_path, status="completed",
+                            phase=result["phase"],
+                            details={"candidate_status": summary["status"],
+                                     "candidates_found": summary["found"],
+                                     "candidates_staged": summary["staged"]},
                         )
-                    logger.info(
-                        "media_inspection_cache_miss",
-                        extra={"event": "media_inspection_cache_miss", "job_id": job_id,
-                               "media_path": media_relative_path, "phase": "inspection"},
+                        succeeded += 1
+                        logger.info(
+                            "media_scan_completed",
+                            extra={"event": "media_scan_completed", "job_id": job_id,
+                                   "media_path": media_relative_path, "phase": result["phase"],
+                                   "status": "completed"},
+                        )
+                    elif result["status"] == "failed":
+                        record_job_item(
+                            job_id, media_path=media_relative_path, status="failed",
+                            phase=result["phase"], error=result["error"],
+                        )
+                        failed += 1
+                    else:
+                        record_job_item(
+                            job_id, media_path=media_relative_path, status="cancelled",
+                            phase="cancelled",
+                        )
+                    completed += 1
+                    update_job_progress(
+                        job_id, completed=completed, succeeded=succeeded, failed=failed,
                     )
-                else:
-                    logger.info(
-                        "media_inspection_cache_hit",
-                        extra={"event": "media_inspection_cache_hit", "job_id": job_id,
-                               "media_path": media_relative_path, "phase": "inspection"},
-                    )
-                summary = {"status":"not_configured","found":0,"staged":0,"candidates":[]}
-                phase = "inspected"
-                if target_languages == ["en"] and details["has_verified_english_subtitle"]:
-                    summary["status"] = "verified_english_present"
-                    logger.info(
-                        "candidate_discovery_skipped",
-                        extra={"event": "candidate_discovery_skipped",
-                               "job_id": job_id, "media_path": media_relative_path,
-                               "phase": "discovery", "filter_reason": "verified_english_subtitle_present"},
-                    )
-                elif client is not None and get_job(job_id)["status"] == "running":
-                    phase = "discovery"
-                    update_job_progress(job_id, phase=phase, current_file=media_relative_path)
-                    try:
-                        with timed_stage("candidate_staging", job_id=job_id,
-                                         media_path=media_relative_path):
-                            summary = stage_candidates(client, path, Path(settings.media_root).resolve(),
-                                                       stat_result, details.get("metadata") or {}, target_languages)
-                    except OpenSubtitlesError as exc:
-                        logger.warning("opensubtitles_search_failed", extra={"event":"opensubtitles_search_failed","job_id":job_id,"media_path":media_relative_path,"phase":"discovery","error_type":type(exc).__name__})
-                        summary = {"status":"provider_error","found":0,"staged":0,
-                                   "candidates":[],"error":str(exc)}
-                elif client is None:
-                    logger.info(
-                        "candidate_discovery_skipped",
-                        extra={"event": "candidate_discovery_skipped",
-                               "job_id": job_id, "media_path": media_relative_path,
-                               "phase": "discovery", "filter_reason": "provider_not_configured"},
-                    )
-                record_job_item(job_id, media_path=media_relative_path, status="completed",
-                                phase=phase, details={"candidate_status":summary["status"],
-                                "candidates_found":summary["found"],"candidates_staged":summary["staged"]})
-                succeeded += 1
-                logger.info("media_scan_completed", extra={"event":"media_scan_completed",
-                            "job_id":job_id,"media_path":media_relative_path,"phase":phase,"status":"completed"})
-            except (OSError, subprocess.SubprocessError, ValueError, OpenSubtitlesError) as exc:
-                record_job_item(job_id, media_path=media_relative_path, status="failed",
-                                phase="scan", error=f"{type(exc).__name__}: {str(exc)[:400]}")
-                failed += 1
-                logger.exception("media_scan_failed", extra={"event":"media_scan_failed",
-                                 "job_id":job_id,"media_path":media_relative_path,
-                                 "phase":"scan","error_type":type(exc).__name__})
-            completed += 1
-            update_job_progress(job_id, completed=completed, succeeded=succeeded, failed=failed)
+                if not _scan_job_is_running(job_id):
+                    return
         finish_job(job_id, "completed", f"{failed} file(s) failed." if failed else None)
-        logger.info("scan_job_completed", extra={"event":"scan_job_completed",
-                    "job_id":job_id,"phase":"completed","status":"completed"})
+        logger.info(
+            "scan_job_completed",
+            extra={"event": "scan_job_completed", "job_id": job_id,
+                   "phase": "completed", "status": "completed"},
+        )
     except Exception as exc:
         finish_job(job_id, "failed", f"{type(exc).__name__}: {str(exc)[:400]}")
-        logger.exception("scan_job_failed", extra={"event":"scan_job_failed","job_id":job_id,
-                         "phase":"scan","error_type":type(exc).__name__})
+        logger.exception(
+            "scan_job_failed",
+            extra={"event": "scan_job_failed", "job_id": job_id,
+                   "phase": "scan", "error_type": type(exc).__name__},
+        )
 
 
 @app.post("/api/scan")
