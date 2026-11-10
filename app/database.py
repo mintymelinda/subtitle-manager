@@ -72,6 +72,9 @@ def initialize():
             media_relative_path TEXT NOT NULL,
             media_size INTEGER,
             media_modified_at REAL,
+            media_modified_ns INTEGER,
+            media_device INTEGER,
+            media_inode INTEGER,
             subtitle_id TEXT,
             file_id INTEGER NOT NULL,
             file_name TEXT NOT NULL,
@@ -125,6 +128,12 @@ def initialize():
             db.execute("ALTER TABLE subtitle_candidates ADD COLUMN patch_started_at TEXT")
         if "patch_completed_at" not in candidate_columns:
             db.execute("ALTER TABLE subtitle_candidates ADD COLUMN patch_completed_at TEXT")
+        if "media_modified_ns" not in candidate_columns:
+            db.execute("ALTER TABLE subtitle_candidates ADD COLUMN media_modified_ns INTEGER")
+        if "media_device" not in candidate_columns:
+            db.execute("ALTER TABLE subtitle_candidates ADD COLUMN media_device INTEGER")
+        if "media_inode" not in candidate_columns:
+            db.execute("ALTER TABLE subtitle_candidates ADD COLUMN media_inode INTEGER")
         history_columns = {row[1] for row in db.execute("PRAGMA table_info(patch_history)")}
         if "candidate_id" not in history_columns:
             db.execute("ALTER TABLE patch_history ADD COLUMN candidate_id INTEGER")
@@ -201,6 +210,25 @@ def record_scan(relative_path: str, size: int | None, modified_at: float | None,
                 inspection: dict | None = None, *, modified_ns: int | None = None,
                 device: int | None = None, inode: int | None = None):
     with connect() as db:
+        previous = db.execute(
+            "SELECT modified_ns, device, inode FROM media_files WHERE relative_path=?",
+            (relative_path,),
+        ).fetchone()
+        if previous is not None and (
+            previous["modified_ns"], previous["device"], previous["inode"]
+        ) != (modified_ns, device, inode):
+            # A changed file version invalidates old approvals, even when its
+            # size and coarse modification timestamp happen to be identical.
+            db.execute(
+                """UPDATE subtitle_candidates
+                   SET review_decision='pending', review_updated_at=NULL,
+                       patch_status=CASE WHEN patch_status='patched' THEN 'not_started' ELSE patch_status END,
+                       patch_started_at=CASE WHEN patch_status='patched' THEN NULL ELSE patch_started_at END,
+                       patch_completed_at=CASE WHEN patch_status='patched' THEN NULL ELSE patch_completed_at END,
+                       updated_at=CURRENT_TIMESTAMP
+                   WHERE media_relative_path=? AND patch_status!='running'""",
+                (relative_path,),
+            )
         db.execute("""
             INSERT INTO media_files(
                 relative_path, size, modified_at, modified_ns, device, inode,
@@ -223,18 +251,23 @@ def record_scan(relative_path: str, size: int | None, modified_at: float | None,
 
 
 def save_candidate(media_relative_path: str, media_size: int, media_modified_at: float,
-                   candidate: dict) -> dict:
+                   candidate: dict, *, media_modified_ns: int | None = None,
+                   media_device: int | None = None, media_inode: int | None = None) -> dict:
     with connect() as db:
         db.execute("""
             INSERT INTO subtitle_candidates(
-                media_relative_path, media_size, media_modified_at, subtitle_id,
+                media_relative_path, media_size, media_modified_at,
+                media_modified_ns, media_device, media_inode, subtitle_id,
                 file_id, file_name, language, format, release, moviehash_match,
                 download_count, rating, trusted_uploader, hearing_impaired,
                 ai_translated, match_score, match_reasons
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(media_relative_path, file_id) DO UPDATE SET
                 media_size=excluded.media_size,
                 media_modified_at=excluded.media_modified_at,
+                media_modified_ns=excluded.media_modified_ns,
+                media_device=excluded.media_device,
+                media_inode=excluded.media_inode,
                 subtitle_id=excluded.subtitle_id,
                 file_name=CASE
                     WHEN subtitle_candidates.status='staged'
@@ -255,31 +288,47 @@ def save_candidate(media_relative_path: str, media_size: int, media_modified_at:
                 status=CASE WHEN subtitle_candidates.status IN ('staged', 'rejected_non_english')
                             THEN subtitle_candidates.status ELSE 'discovered' END,
                 review_decision=CASE
-                    WHEN subtitle_candidates.media_size != excluded.media_size
-                      OR subtitle_candidates.media_modified_at != excluded.media_modified_at
+                    WHEN subtitle_candidates.media_size IS NOT excluded.media_size
+                      OR subtitle_candidates.media_modified_at IS NOT excluded.media_modified_at
+                      OR subtitle_candidates.media_modified_ns IS NOT excluded.media_modified_ns
+                      OR subtitle_candidates.media_device IS NOT excluded.media_device
+                      OR subtitle_candidates.media_inode IS NOT excluded.media_inode
                     THEN 'pending' ELSE subtitle_candidates.review_decision END,
                 review_updated_at=CASE
-                    WHEN subtitle_candidates.media_size != excluded.media_size
-                      OR subtitle_candidates.media_modified_at != excluded.media_modified_at
+                    WHEN subtitle_candidates.media_size IS NOT excluded.media_size
+                      OR subtitle_candidates.media_modified_at IS NOT excluded.media_modified_at
+                      OR subtitle_candidates.media_modified_ns IS NOT excluded.media_modified_ns
+                      OR subtitle_candidates.media_device IS NOT excluded.media_device
+                      OR subtitle_candidates.media_inode IS NOT excluded.media_inode
                     THEN NULL ELSE subtitle_candidates.review_updated_at END,
                 patch_status=CASE
-                    WHEN (subtitle_candidates.media_size != excluded.media_size
-                      OR subtitle_candidates.media_modified_at != excluded.media_modified_at)
+                    WHEN (subtitle_candidates.media_size IS NOT excluded.media_size
+                      OR subtitle_candidates.media_modified_at IS NOT excluded.media_modified_at
+                      OR subtitle_candidates.media_modified_ns IS NOT excluded.media_modified_ns
+                      OR subtitle_candidates.media_device IS NOT excluded.media_device
+                      OR subtitle_candidates.media_inode IS NOT excluded.media_inode)
                       AND subtitle_candidates.patch_status='patched'
                     THEN 'not_started' ELSE subtitle_candidates.patch_status END,
                 patch_started_at=CASE
-                    WHEN (subtitle_candidates.media_size != excluded.media_size
-                      OR subtitle_candidates.media_modified_at != excluded.media_modified_at)
+                    WHEN (subtitle_candidates.media_size IS NOT excluded.media_size
+                      OR subtitle_candidates.media_modified_at IS NOT excluded.media_modified_at
+                      OR subtitle_candidates.media_modified_ns IS NOT excluded.media_modified_ns
+                      OR subtitle_candidates.media_device IS NOT excluded.media_device
+                      OR subtitle_candidates.media_inode IS NOT excluded.media_inode)
                       AND subtitle_candidates.patch_status='patched'
                     THEN NULL ELSE subtitle_candidates.patch_started_at END,
                 patch_completed_at=CASE
-                    WHEN (subtitle_candidates.media_size != excluded.media_size
-                      OR subtitle_candidates.media_modified_at != excluded.media_modified_at)
+                    WHEN (subtitle_candidates.media_size IS NOT excluded.media_size
+                      OR subtitle_candidates.media_modified_at IS NOT excluded.media_modified_at
+                      OR subtitle_candidates.media_modified_ns IS NOT excluded.media_modified_ns
+                      OR subtitle_candidates.media_device IS NOT excluded.media_device
+                      OR subtitle_candidates.media_inode IS NOT excluded.media_inode)
                       AND subtitle_candidates.patch_status='patched'
                     THEN NULL ELSE subtitle_candidates.patch_completed_at END,
                 updated_at=CURRENT_TIMESTAMP
         """, (
             media_relative_path, media_size, media_modified_at,
+            media_modified_ns, media_device, media_inode,
             str(candidate.get("subtitle_id") or ""), candidate["file_id"],
             candidate["file_name"], candidate["language"], candidate["format"],
             candidate.get("release", ""), int(candidate.get("moviehash_match", False)),
@@ -376,6 +425,8 @@ def clear_saved_data() -> list[str]:
 def list_candidates(media_relative_path: str | None = None) -> list[dict]:
     query = """
         SELECT c.*, m.size AS current_media_size, m.modified_at AS current_media_modified_at,
+               m.modified_ns AS current_media_modified_ns, m.device AS current_media_device,
+               m.inode AS current_media_inode,
                m.has_verified_english_subtitle, m.inspection_json
         FROM subtitle_candidates c
         LEFT JOIN media_files m ON m.relative_path = c.media_relative_path
@@ -395,6 +446,9 @@ def list_candidates(media_relative_path: str | None = None) -> list[dict]:
         item["is_stale"] = (
             item.get("current_media_size") != item.get("media_size")
             or item.get("current_media_modified_at") != item.get("media_modified_at")
+            or item.get("current_media_modified_ns") != item.get("media_modified_ns")
+            or item.get("current_media_device") != item.get("media_device")
+            or item.get("current_media_inode") != item.get("media_inode")
         )
         results.append(item)
     return results
