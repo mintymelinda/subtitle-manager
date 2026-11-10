@@ -1388,7 +1388,7 @@ def scan(request: ScanRequest, background_tasks: BackgroundTasks):
     logger.info(
         "scan_inventory_completed",
         extra={"event": "scan_inventory_completed", "phase": "discovery",
-               "provider_count": len(paths), "status": f"{len(paths)} supported MKV files across {len(roots)} selected folder(s)"},
+               "file_count": len(paths), "status": f"{len(paths)} supported MKV files across {len(roots)} selected folder(s)"},
     )
     job = create_job("scan", total=len(paths), metadata={
         "scan_roots": [str(root.relative_to(media_root)) for root in roots],
