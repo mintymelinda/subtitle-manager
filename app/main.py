@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from fastapi.responses import HTMLResponse, FileResponse, PlainTextResponse
 
 from app.config import settings
-from app.observability import configure_logging, logger
+from app.observability import configure_logging, logger, timed_stage
 
 from app.database import (
     initialize, record_scan, save_candidate, mark_candidate_staged,
@@ -88,7 +88,9 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
         raise OpenSubtitlesError("Subtitle staging directory must be outside the media library.")
     logger.info("opensubtitles_search_started", extra={"event":"opensubtitles_search_started","media_path":relative_media_path,"phase":"discovery"})
     target_languages = normalize_languages(target_languages)
-    candidates = client.search(path, metadata, languages=target_languages)
+    with timed_stage("opensubtitles_search", media_path=relative_media_path,
+                     tool="opensubtitles"):
+        candidates = client.search(path, metadata, languages=target_languages)
     logger.info("opensubtitles_search_completed", extra={"event":"opensubtitles_search_completed","media_path":relative_media_path,"phase":"discovery","status":f"{len(candidates)} candidates","provider_count":len(candidates)})
     summary = {"status": "no_candidates" if not candidates else "complete",
                "found": len(candidates), "staged": 0, "candidates": []}
@@ -134,10 +136,13 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                 status = "download_quota_reached"
             else:
                 try:
-                    file_name, payload, remaining = client.download(candidate["file_id"])
-                    assessment = assess_subtitle_payload(
-                        file_name, payload, expected_language=candidate["language"]
-                    )
+                    with timed_stage("candidate_download_and_assessment",
+                                     media_path=relative_media_path, candidate_id=row["id"],
+                                     tool="opensubtitles"):
+                        file_name, payload, remaining = client.download(candidate["file_id"])
+                        assessment = assess_subtitle_payload(
+                            file_name, payload, expected_language=candidate["language"]
+                        )
                     detected_language = assessment.get("content_language")
                     if detected_language and not language_matches(detected_language, candidate["language"]):
                         mark_candidate_error(
@@ -151,14 +156,17 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                         extension = Path(file_name).suffix.lower()
                         target = staging_root / f"candidate-{row['id']}{extension}"
                         temporary = staging_root / f".candidate-{row['id']}-{uuid.uuid4().hex}.part"
-                        descriptor = os.open(
-                            temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
-                        )
-                        with os.fdopen(descriptor, "wb") as staged_file:
-                            staged_file.write(payload)
-                            staged_file.flush()
-                            os.fsync(staged_file.fileno())
-                        os.replace(temporary, target)
+                        with timed_stage("candidate_stage_write",
+                                         media_path=relative_media_path, candidate_id=row["id"],
+                                         bytes_processed=len(payload)):
+                            descriptor = os.open(
+                                temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+                            )
+                            with os.fdopen(descriptor, "wb") as staged_file:
+                                staged_file.write(payload)
+                                staged_file.flush()
+                                os.fsync(staged_file.fileno())
+                            os.replace(temporary, target)
                         mark_candidate_staged(
                             row["id"], str(target), remaining, assessment,
                             file_name=Path(file_name).name,
@@ -1258,9 +1266,14 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path], target_languages: l
             update_job_progress(job_id, phase="inspecting", current_file=media_relative_path)
             record_job_item(job_id, media_path=media_relative_path, status="running", phase="inspecting")
             try:
-                details = inspect_media(path)
                 stat_result = path.stat()
-                record_scan(media_relative_path, stat_result.st_size, stat_result.st_mtime, details)
+                with timed_stage("media_inspection", job_id=job_id,
+                                 media_path=media_relative_path,
+                                 file_size_bytes=stat_result.st_size):
+                    details = inspect_media(path)
+                with timed_stage("scan_record_persistence", job_id=job_id,
+                                 media_path=media_relative_path):
+                    record_scan(media_relative_path, stat_result.st_size, stat_result.st_mtime, details)
                 summary = {"status":"not_configured","found":0,"staged":0,"candidates":[]}
                 phase = "inspected"
                 if target_languages == ["en"] and details["has_verified_english_subtitle"]:
@@ -1275,8 +1288,10 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path], target_languages: l
                     phase = "discovery"
                     update_job_progress(job_id, phase=phase, current_file=media_relative_path)
                     try:
-                        summary = stage_candidates(client, path, Path(settings.media_root).resolve(),
-                                                   stat_result, details.get("metadata") or {}, target_languages)
+                        with timed_stage("candidate_staging", job_id=job_id,
+                                         media_path=media_relative_path):
+                            summary = stage_candidates(client, path, Path(settings.media_root).resolve(),
+                                                       stat_result, details.get("metadata") or {}, target_languages)
                     except OpenSubtitlesError as exc:
                         logger.warning("opensubtitles_search_failed", extra={"event":"opensubtitles_search_failed","job_id":job_id,"media_path":media_relative_path,"phase":"discovery","error_type":type(exc).__name__})
                         summary = {"status":"provider_error","found":0,"staged":0,
@@ -1361,12 +1376,13 @@ def scan(request: ScanRequest, background_tasks: BackgroundTasks):
     try:
         paths = []
         seen = set()
-        for selected_root in roots:
-            for media_file in scan_media(selected_root):
-                canonical = media_file.resolve(strict=True)
-                if canonical not in seen:
-                    seen.add(canonical)
-                    paths.append(canonical)
+        with timed_stage("scan_inventory", file_count=0, phase="discovery"):
+            for selected_root in roots:
+                for media_file in scan_media(selected_root):
+                    canonical = media_file.resolve(strict=True)
+                    if canonical not in seen:
+                        seen.add(canonical)
+                        paths.append(canonical)
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     logger.info(
