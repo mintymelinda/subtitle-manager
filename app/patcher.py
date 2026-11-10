@@ -46,22 +46,26 @@ def _subtitle_has_content(path: Path, stream: dict) -> bool:
     stream_index = stream.get("index")
     if stream_index is None:
         raise RuntimeError("Validation failed: added subtitle stream has no index")
-    packets = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", str(stream_index),
-         "-show_packets", "-show_entries", "packet=size", "-of", "json", str(path)],
-        check=True, capture_output=True, text=True, timeout=90,
-    )
+    with timed_stage("injection_packet_validation", media_path=str(path),
+                     stream_index=stream_index, tool="ffprobe"):
+        packets = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", str(stream_index),
+             "-show_packets", "-show_entries", "packet=size", "-of", "json", str(path)],
+            check=True, capture_output=True, text=True, timeout=90,
+        )
     packet_data = json.loads(packets.stdout or "{}").get("packets", [])
     if not any(int(packet.get("size") or 0) > 0 for packet in packet_data):
         return False
 
     codec = str(stream.get("codec_name") or "").lower()
     if codec in {"subrip", "ass", "ssa", "webvtt", "mov_text", "text"}:
-        decoded = subprocess.run(
-            ["ffmpeg", "-v", "error", "-i", str(path), "-map", f"0:{stream_index}",
-             "-f", "srt", "pipe:1"],
-            check=True, capture_output=True, text=True, timeout=90,
-        )
+        with timed_stage("injection_subtitle_decode_validation", media_path=str(path),
+                         stream_index=stream_index, tool="ffmpeg"):
+            decoded = subprocess.run(
+                ["ffmpeg", "-v", "error", "-i", str(path), "-map", f"0:{stream_index}",
+                 "-f", "srt", "pipe:1"],
+                check=True, capture_output=True, text=True, timeout=90,
+            )
         return bool(re.search(
             r"(?m)^.*-->.*$\n(?:[^\n]*\S[^\n]*\n?)+",
             decoded.stdout or "",
