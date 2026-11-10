@@ -1417,6 +1417,12 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path],
                 valid_paths = [path for path in batch if media_path_is_safe(path, root)]
                 if not valid_paths:
                     continue
+                logger.info(
+                    "scan_batch_started",
+                    extra={"event": "scan_batch_started", "job_id": job_id,
+                           "phase": "inspection", "batch_size": len(valid_paths),
+                           "worker_limit": worker_count, "batch_offset": offset},
+                )
                 update_job_progress(
                     job_id, phase="inspecting",
                     current_file=valid_paths[0].relative_to(media_root).as_posix(),
@@ -1470,6 +1476,12 @@ def _scan_worker(job_id: int, root: Path, paths: list[Path],
                     update_job_progress(
                         job_id, completed=completed, succeeded=succeeded, failed=failed,
                     )
+                logger.info(
+                    "scan_batch_completed",
+                    extra={"event": "scan_batch_completed", "job_id": job_id,
+                           "phase": "inspection", "batch_size": len(valid_paths),
+                           "completed": completed, "failed": failed},
+                )
                 if not _scan_job_is_running(job_id):
                     return
         finish_job(job_id, "completed", f"{failed} file(s) failed." if failed else None)
