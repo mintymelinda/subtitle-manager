@@ -280,7 +280,7 @@ function renderExistingSubtitleControls(card,candidate,allCandidates){
     const fieldset=el("fieldset",undefined,"existing-subtitle-tracks");
     const legend=el("legend","Existing subtitle tracks — included by default");
     fieldset.append(legend);
-    if(!tracks.length){fieldset.append(el("p","No existing subtitle tracks."));card.append(fieldset);return;}
+    if(!tracks.length){fieldset.append(el("p","No existing subtitle tracks."));}
     for(const track of tracks){
         const label=el("label",undefined,"existing-subtitle-track");
         const checkbox=document.createElement("input");checkbox.type="checkbox";checkbox.checked=true;
@@ -289,7 +289,7 @@ function renderExistingSubtitleControls(card,candidate,allCandidates){
         label.append(checkbox,document.createTextNode(description));fieldset.append(label);
     }
     if(!candidate.is_non_candidate){
-        const automaticLabel=el("label",undefined,"existing-subtitle-track");
+        const automaticLabel=el("label",undefined,"automatic-cleanup-toggle");
         const automaticCheckbox=document.createElement("input");
         automaticCheckbox.type="checkbox";automaticCheckbox.checked=false;
         automaticCheckbox.setAttribute("aria-label","Select None — enable automatic subtitle cleanup");
