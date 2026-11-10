@@ -1376,7 +1376,7 @@ def scan(request: ScanRequest, background_tasks: BackgroundTasks):
     try:
         paths = []
         seen = set()
-        with timed_stage("scan_inventory", file_count=0, phase="discovery"):
+        with timed_stage("scan_inventory", phase="discovery"):
             for selected_root in roots:
                 for media_file in scan_media(selected_root):
                     canonical = media_file.resolve(strict=True)
