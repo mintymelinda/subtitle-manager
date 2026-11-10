@@ -22,7 +22,7 @@ class AutomaticSubtitleCleanupDashboardTests(unittest.TestCase):
         self.assertIn('if(!confirm("Run automatic cleanup for "+candidate.file_name', source)
         self.assertIn('body:JSON.stringify({decision:"approved"})', source)
         self.assertIn('trackJob(injected.job_id)', source)
-        self.assertIn('No further warnings or prompts will appear.', source)
+        self.assertIn('no further warnings or prompts will appear.', source)
 
 
 if __name__ == "__main__":
