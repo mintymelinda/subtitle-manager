@@ -145,7 +145,9 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
             "content_language": row.get("content_language"),
             "content_confidence": row.get("content_language_confidence"),
         }
-        if status != "staged":
+        if should_cancel is not None and should_cancel():
+            status = "cancelled"
+        if status not in {"staged", "cancelled"}:
             try:
                 with timed_stage("candidate_download_and_assessment",
                                  media_path=relative_media_path, candidate_id=row["id"],
