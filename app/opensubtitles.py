@@ -7,12 +7,6 @@ from __future__ import annotations
 
 import json
 import re
-
-from app.observability import logger
-from app.languages import normalize_languages, canonical_language, language_matches
-
-from langdetect import DetectorFactory, detect_langs
-from langdetect.lang_detect_exception import LangDetectException
 import struct
 import time
 import urllib.error
@@ -23,6 +17,12 @@ from io import BytesIO
 from pathlib import Path
 from threading import Lock
 from typing import Any
+
+from langdetect import DetectorFactory, detect_langs
+from langdetect.lang_detect_exception import LangDetectException
+
+from app.languages import normalize_languages, canonical_language, language_matches
+from app.observability import logger
 
 API_BASE_URL = "https://api.opensubtitles.com/api/v1"
 USER_AGENT = "SubtitleManager v0.1.0"
