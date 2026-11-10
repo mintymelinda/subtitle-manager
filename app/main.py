@@ -1275,13 +1275,20 @@ def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
                    client: OpenSubtitlesClient | None,
                    target_languages: list[str]) -> dict | None:
     """Inspect and discover candidates for one file; safe to run in a worker thread."""
-    if not _scan_job_is_running(job_id) or not media_path_is_safe(path, root):
-        return None if not media_path_is_safe(path, root) else {
-            "media_path": str(path.relative_to(media_root)),
+    media_relative_path = str(path.relative_to(media_root))
+    if not _scan_job_is_running(job_id):
+        return {
+            "media_path": media_relative_path,
             "status": "cancelled",
             "phase": "cancelled",
         }
-    media_relative_path = str(path.relative_to(media_root))
+    if not media_path_is_safe(path, root):
+        return {
+            "media_path": media_relative_path,
+            "status": "failed",
+            "phase": "scan",
+            "error": "Media file disappeared or moved outside the selected scan root.",
+        }
     try:
         stat_result = path.stat()
         details = get_cached_scan(media_relative_path, stat_result)
