@@ -7,10 +7,14 @@ from unittest.mock import patch
 from app.config import settings
 from app.database import (
     create_job,
+    connect,
     get_cached_scan,
+    get_candidate,
     get_job,
     initialize,
+    list_candidates,
     record_scan,
+    save_candidate,
 )
 from app.main import _scan_worker
 
@@ -77,6 +81,54 @@ class InspectionCacheTests(unittest.TestCase):
         self.assertEqual(replaced_stat.st_mtime_ns, original_stat.st_mtime_ns)
         self.assertNotEqual(replaced_stat.st_ino, original_stat.st_ino)
         self.assertIsNone(get_cached_scan("replacement.mkv", replaced_stat))
+
+    def test_replacement_invalidates_candidate_approval_and_patch_state(self):
+        media = self.root / "approved.mkv"
+        media.write_bytes(b"same-size")
+        original_stat = media.stat()
+        record_scan(
+            "approved.mkv", original_stat.st_size, original_stat.st_mtime,
+            {"has_verified_english_subtitle": False},
+            modified_ns=original_stat.st_mtime_ns,
+            device=original_stat.st_dev,
+            inode=original_stat.st_ino,
+        )
+        candidate = save_candidate(
+            "approved.mkv", original_stat.st_size, original_stat.st_mtime,
+            {"file_id": 77, "file_name": "candidate.srt", "language": "en",
+             "format": "srt"},
+            media_modified_ns=original_stat.st_mtime_ns,
+            media_device=original_stat.st_dev,
+            media_inode=original_stat.st_ino,
+        )
+        with connect() as db:
+            db.execute(
+                """UPDATE subtitle_candidates
+                   SET status='staged', review_decision='approved', patch_status='patched'
+                   WHERE media_relative_path=? AND file_id=?""",
+                ("approved.mkv", 77),
+            )
+
+        replacement = self.root / "approved.tmp"
+        replacement.write_bytes(b"same-size")
+        os.utime(
+            replacement,
+            ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+        )
+        os.replace(replacement, media)
+        replaced_stat = media.stat()
+        record_scan(
+            "approved.mkv", replaced_stat.st_size, replaced_stat.st_mtime,
+            {"has_verified_english_subtitle": False},
+            modified_ns=replaced_stat.st_mtime_ns,
+            device=replaced_stat.st_dev,
+            inode=replaced_stat.st_ino,
+        )
+
+        refreshed = get_candidate(candidate["id"])
+        self.assertEqual(refreshed["review_decision"], "pending")
+        self.assertEqual(refreshed["patch_status"], "not_started")
+        self.assertTrue(list_candidates("approved.mkv")[0]["is_stale"])
 
     def test_legacy_rows_without_filesystem_identity_are_cache_misses(self):
         media = self.root / "legacy.mkv"
