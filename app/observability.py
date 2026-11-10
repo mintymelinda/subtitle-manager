@@ -2,6 +2,8 @@
 import json
 import logging
 import re
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 _SECRET = re.compile(r"(?i)(api[_-]?key|password|token|authorization|cookie)(\s*[=:]\s*)([^\s,;]+)")
@@ -33,7 +35,8 @@ class JsonFormatter(logging.Formatter):
                      "provider_count", "result_count", "accepted_count", "filtered_count",
                      "filter_reason", "language", "file_count", "file_name", "file_id",
                      "match_score", "match_reasons", "moviehash_match", "download_count",
-                     "candidate_limit", "selected_count", "remaining_count", "log_level"):
+                     "candidate_limit", "selected_count", "remaining_count", "log_level", "stage", "elapsed_ms",
+                     "bytes_processed", "file_size_bytes", "stream_index", "stream_count", "tool"):
             if hasattr(record, key):
                 payload[key] = getattr(record, key)
         if record.exc_info:
@@ -55,3 +58,29 @@ def configure_logging(level: str = "INFO"):
 
 
 logger = logging.getLogger("subtitle_manager")
+
+
+def safe_file_size(path):
+    """Return a file size for telemetry when available, without affecting processing."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
+@contextmanager
+def timed_stage(stage: str, **context):
+    """Log elapsed time for one processing stage without changing its behavior."""
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        logger.info(
+            "stage_timing",
+            extra={
+                "event": "stage_timing",
+                "stage": stage,
+                "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+                **context,
+            },
+        )
