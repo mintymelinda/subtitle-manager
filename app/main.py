@@ -1310,6 +1310,12 @@ def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
             # Keep FFmpeg/FFprobe work serial on modest hosts while allowing
             # provider discovery and staging for other files to overlap.
             with inspection_lock:
+                if not _scan_job_is_running(job_id):
+                    return {
+                        "media_path": media_relative_path,
+                        "status": "cancelled",
+                        "phase": "cancelled",
+                    }
                 with timed_stage("media_inspection", job_id=job_id,
                                  media_path=media_relative_path,
                                  file_size_bytes=stat_result.st_size):
