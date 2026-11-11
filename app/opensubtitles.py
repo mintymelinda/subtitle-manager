@@ -273,8 +273,8 @@ class OpenSubtitlesClient:
                 if provider_detail:
                     from app.observability import redact
                     provider_detail = redact(provider_detail)
-                    provider_detail = re.sub(r"https?://\S+, "[URL REDACTED]", provider_detail)
-                    provider_detail = re.sub(r"[\r\n\t]+, " ", provider_detail)
+                    provider_detail = re.sub(r"https?://\S+", "[URL REDACTED]", provider_detail)
+                    provider_detail = re.sub(r"[\r\n\t]+", " ", provider_detail)
                     provider_detail = "".join(ch for ch in provider_detail if ch.isprintable())[:240].strip()
                     provider_detail = provider_detail or None
                 quota_match = any(term in provider_text for term in (
