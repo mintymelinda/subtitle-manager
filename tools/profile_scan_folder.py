@@ -33,6 +33,7 @@ CAPTURED_EVENTS = {
     "media_scan_completed",
     "media_scan_failed",
     "profile_file_timing",
+    "scan_db_batch_completed",
 }
 
 
@@ -66,6 +67,7 @@ class ProfileCapture(logging.Handler):
                 "bytes_processed": getattr(record, "bytes_processed", None),
                 "file_size_bytes": getattr(record, "file_size_bytes", None),
                 "tool": getattr(record, "tool", None),
+                "database_operation": getattr(record, "database_operation", None),
             })
         elif event in CAPTURED_EVENTS:
             self.events.append({
@@ -79,6 +81,9 @@ class ProfileCapture(logging.Handler):
                 "selected_count": getattr(record, "selected_count", None),
                 "accepted_count": getattr(record, "accepted_count", None),
                 "filter_reason": getattr(record, "filter_reason", None),
+                "batch_size": getattr(record, "batch_size", None),
+                "operation_count": getattr(record, "operation_count", None),
+                "queue_depth": getattr(record, "queue_depth", None),
             })
 
 
@@ -227,6 +232,13 @@ def main():
             if cache_hits + cache_misses else None,
         },
         "stage_summary": summarize_stages(capture.stages),
+        "database_writer": {
+            "batch_count": sum(1 for event in capture.events if event["event"] == "scan_db_batch_completed"),
+            "operation_count": sum(event.get("operation_count") or 0 for event in capture.events
+                                    if event["event"] == "scan_db_batch_completed"),
+            "max_batch_size": max((event.get("batch_size") or 0 for event in capture.events
+                                    if event["event"] == "scan_db_batch_completed"), default=0),
+        },
         "slowest_files": slowest_files(capture.stages, capture.events),
         "notes": [
             "This invokes the production scan worker and uses its normal database and staging behavior.",
