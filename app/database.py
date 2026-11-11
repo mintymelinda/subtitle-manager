@@ -201,6 +201,14 @@ def initialize():
             ON subtitle_candidates(media_relative_path);
         CREATE INDEX IF NOT EXISTS idx_subtitle_candidates_status
             ON subtitle_candidates(status);
+        CREATE TABLE IF NOT EXISTS provider_status (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            status TEXT NOT NULL,
+            error_code TEXT,
+            message TEXT NOT NULL,
+            retry_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         """)
 
 
@@ -832,3 +840,29 @@ def recover_interrupted_jobs() -> int:
                 (row["id"],),
             )
         return len(rows)
+
+
+
+def set_provider_status(status: str, message: str, *, error_code: str | None = None,
+                        retry_at: str | None = None) -> None:
+    """Persist a sanitized provider-wide state for the dashboard and retry worker."""
+    with connect() as db:
+        db.execute(
+            """INSERT INTO provider_status(id, status, error_code, message, retry_at)
+               VALUES (1, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET status=excluded.status,
+                   error_code=excluded.error_code, message=excluded.message,
+                   retry_at=excluded.retry_at, updated_at=CURRENT_TIMESTAMP""",
+            (status, error_code, message[:300], retry_at),
+        )
+
+
+def get_provider_status() -> dict | None:
+    with connect() as db:
+        row = db.execute("SELECT * FROM provider_status WHERE id=1").fetchone()
+    return dict(row) if row else None
+
+
+def clear_provider_status() -> None:
+    with connect() as db:
+        db.execute("DELETE FROM provider_status WHERE id=1")
