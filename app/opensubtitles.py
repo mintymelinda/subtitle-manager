@@ -35,6 +35,19 @@ DetectorFactory.seed = 0
 class OpenSubtitlesError(RuntimeError):
     """A sanitized provider or download error safe to show in the UI."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str = "provider_error",
+        retryable: bool = False,
+        http_status: int | None = None,
+    ):
+        super().__init__(message)
+        self.error_code = error_code
+        self.retryable = retryable
+        self.http_status = http_status
+
 
 def compute_moviehash(path: Path) -> str | None:
     """Return OpenSubtitles' 16-character moviehash, or None below 128 KiB."""
@@ -228,15 +241,43 @@ class OpenSubtitlesClient:
                 )
             if exc.code in (401, 403):
                 raise OpenSubtitlesError(
-                    "OpenSubtitles rejected the API key or account credentials. Check the provider settings."
+                    "OpenSubtitles rejected the API key or account credentials. Check the provider settings.",
+                    error_code="authentication_rejected",
+                    retryable=False,
+                    http_status=exc.code,
                 ) from None
             if exc.code == 429:
-                raise OpenSubtitlesError("OpenSubtitles rate limit reached. Try again later.") from None
+                raise OpenSubtitlesError(
+                    "OpenSubtitles rate limit reached. Try again later.",
+                    error_code="rate_limited",
+                    retryable=True,
+                    http_status=exc.code,
+                ) from None
             if exc.code >= 500:
-                raise OpenSubtitlesError("OpenSubtitles is temporarily unavailable.") from None
-            raise OpenSubtitlesError(f"OpenSubtitles request failed (HTTP {exc.code}).") from None
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-            raise OpenSubtitlesError("Could not reach OpenSubtitles or parse its response.") from None
+                raise OpenSubtitlesError(
+                    "OpenSubtitles is temporarily unavailable.",
+                    error_code="provider_unavailable",
+                    retryable=True,
+                    http_status=exc.code,
+                ) from None
+            raise OpenSubtitlesError(
+                f"OpenSubtitles request failed (HTTP {exc.code}).",
+                error_code="provider_request_rejected",
+                retryable=False,
+                http_status=exc.code,
+            ) from None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            raise OpenSubtitlesError(
+                "Could not reach OpenSubtitles.",
+                error_code="provider_connection_failed",
+                retryable=True,
+            ) from None
+        except ValueError:
+            raise OpenSubtitlesError(
+                "OpenSubtitles returned an invalid response.",
+                error_code="invalid_provider_response",
+                retryable=True,
+            ) from None
 
     def login(self) -> str | None:
         if not self.username or not self.password:
@@ -417,13 +458,21 @@ class OpenSubtitlesClient:
         )
         link = result.get("link")
         if not isinstance(link, str):
-            raise OpenSubtitlesError("OpenSubtitles did not provide a download link.")
+            raise OpenSubtitlesError(
+                "OpenSubtitles did not provide a download link.",
+                error_code="download_link_missing",
+                retryable=True,
+            )
         parsed = urllib.parse.urlparse(link)
         if parsed.scheme != "https" or not parsed.hostname or not (
             parsed.hostname == "opensubtitles.com"
             or parsed.hostname.endswith(".opensubtitles.com")
         ):
-            raise OpenSubtitlesError("OpenSubtitles returned an unsafe download URL.")
+            raise OpenSubtitlesError(
+                "OpenSubtitles returned an unsafe download URL.",
+                error_code="unsafe_download_url",
+                retryable=False,
+            )
         request = urllib.request.Request(link, headers={"User-Agent": USER_AGENT})
         try:
             with self._opener(request, timeout=60) as response:
@@ -431,8 +480,40 @@ class OpenSubtitlesClient:
                 suggested_name = Path(
                     str(result.get("file_name") or urllib.parse.unquote(parsed.path.split("/")[-1]))
                 ).name
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403, 404):
+                raise OpenSubtitlesError(
+                    "OpenSubtitles rejected or expired the subtitle download link.",
+                    error_code="download_link_rejected",
+                    retryable=True,
+                    http_status=exc.code,
+                ) from None
+            if exc.code == 429:
+                raise OpenSubtitlesError(
+                    "OpenSubtitles download rate limit reached. Try again later.",
+                    error_code="download_rate_limited",
+                    retryable=True,
+                    http_status=exc.code,
+                ) from None
+            if exc.code >= 500:
+                raise OpenSubtitlesError(
+                    "OpenSubtitles download service is temporarily unavailable.",
+                    error_code="download_service_unavailable",
+                    retryable=True,
+                    http_status=exc.code,
+                ) from None
+            raise OpenSubtitlesError(
+                f"Subtitle download request failed (HTTP {exc.code}).",
+                error_code="download_request_rejected",
+                retryable=False,
+                http_status=exc.code,
+            ) from None
         except (urllib.error.URLError, TimeoutError, OSError):
-            raise OpenSubtitlesError("Subtitle download failed.") from None
+            raise OpenSubtitlesError(
+                "Subtitle download could not reach the provider.",
+                error_code="download_connection_failed",
+                retryable=True,
+            ) from None
         if len(payload) > MAX_DOWNLOAD_BYTES:
             raise OpenSubtitlesError("Subtitle download exceeded the 25 MiB safety limit.")
         if payload.startswith(bytes((0x50, 0x4B, 0x03, 0x04))):
