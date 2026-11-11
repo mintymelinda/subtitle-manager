@@ -178,6 +178,7 @@ class OpenSubtitlesClient:
         self._opener = opener or urllib.request.urlopen
         self._sleep = sleeper
         self.remaining_downloads: int | None = None
+        self.quota_retry_at: str | None = None
         self._login_lock = Lock()
         self._download_quota_lock = Lock()
         self._download_probe_lock = Lock()
@@ -291,6 +292,7 @@ class OpenSubtitlesClient:
                             retry_at = datetime.now(timezone.utc) + timedelta(seconds=max(0, int(retry_header)))
                         except (TypeError, ValueError):
                             retry_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+                    self.quota_retry_at = retry_at.astimezone(timezone.utc).isoformat()
                     raise OpenSubtitlesError(
                         "OpenSubtitles download limit reached. Waiting before retrying.",
                         error_code="download_quota_reached",
@@ -367,6 +369,8 @@ class OpenSubtitlesClient:
 
     def download_if_available(self, file_id: int) -> tuple[str, bytes, int | None] | None:
         """Reserve quota safely while allowing concurrent downloads once known."""
+        if self.quota_retry_at is not None:
+            return None
         with self._download_quota_lock:
             if self.remaining_downloads is not None:
                 if self.remaining_downloads == 0:
