@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 import struct
 import time
 import urllib.error
@@ -256,7 +257,7 @@ class OpenSubtitlesClient:
                             normalized_key = str(child_key).lower()
                             if normalized_key in {"message", "error", "detail", "description"} and isinstance(child, str):
                                 messages.append(child[:500])
-                            if normalized_key in {"reset_at", "reset_time", "retry_at", "retry_after", "next_reset", "quota_reset"}:
+                            if normalized_key in {"reset", "reset_at", "reset_time", "reset_timestamp", "retry_at", "retry_after", "next_reset", "next_reset_at", "quota_reset", "quota_reset_at"}:
                                 reset_values.append(child)
                             inspect_error(child, normalized_key)
                     elif isinstance(value, list):
@@ -291,7 +292,10 @@ class OpenSubtitlesClient:
                         try:
                             retry_at = datetime.now(timezone.utc) + timedelta(seconds=max(0, int(retry_header)))
                         except (TypeError, ValueError):
-                            retry_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+                            try:
+                                retry_at = parsedate_to_datetime(retry_header).astimezone(timezone.utc)
+                            except (TypeError, ValueError, OverflowError):
+                                retry_at = datetime.now(timezone.utc) + timedelta(minutes=30)
                     self.quota_retry_at = retry_at.astimezone(timezone.utc).isoformat()
                     raise OpenSubtitlesError(
                         "OpenSubtitles download limit reached. Waiting before retrying.",
