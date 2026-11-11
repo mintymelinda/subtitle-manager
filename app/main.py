@@ -213,12 +213,46 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                                  media_path=relative_media_path, candidate_id=row["id"]):
                     mark_candidate_error(row["id"], str(exc), writer=database_writer)
                 status = "download_failed"
-                logger.warning("subtitle_candidate_download_failed", extra={"event":"subtitle_candidate_download_failed","candidate_id":row["id"],"media_path":relative_media_path,"phase":"download","error_type":type(exc).__name__})
+                failure_details = {
+                    "error_code": exc.error_code,
+                    "retryable": exc.retryable,
+                    "http_status": exc.http_status,
+                }
+                logger.warning(
+                    "subtitle_candidate_download_failed",
+                    extra={
+                        "event": "subtitle_candidate_download_failed",
+                        "candidate_id": row["id"],
+                        "media_path": relative_media_path,
+                        "phase": "download",
+                        "error_type": type(exc).__name__,
+                        "error_code": exc.error_code,
+                        "retryable": exc.retryable,
+                        "http_status": exc.http_status,
+                        "error_message": str(exc),
+                    },
+                )
             except OSError:
                 with timed_stage("candidate_database_mark_error",
                                  media_path=relative_media_path, candidate_id=row["id"]):
                     mark_candidate_error(row["id"], "Could not write the staged subtitle file.", writer=database_writer)
                 status = "download_failed"
+                failure_details = {
+                    "error_code": "staging_write_failed",
+                    "retryable": True,
+                    "http_status": None,
+                }
+                logger.exception(
+                    "subtitle_candidate_download_failed",
+                    extra={
+                        "event": "subtitle_candidate_download_failed",
+                        "candidate_id": row["id"],
+                        "media_path": relative_media_path,
+                        "phase": "staging",
+                        "error_code": "staging_write_failed",
+                        "retryable": True,
+                    },
+                )
         if status == "staged":
             summary["staged"] += 1
         summary["candidates"].append({
@@ -240,7 +274,10 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
             "content_language": assessment.get("content_language"),
             "content_confidence": assessment.get("content_confidence"),
             "status": status,
+            "error_code": failure_details.get("error_code") if "failure_details" in locals() else None,
+            "retryable": failure_details.get("retryable") if "failure_details" in locals() else None,
         })
+        failure_details = {}
     for candidate in candidates[len(selected):]:
         logger.debug(
             "subtitle_candidate_not_downloaded",
