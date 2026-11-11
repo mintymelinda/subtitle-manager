@@ -20,6 +20,17 @@ class ScanDatabaseWriterTests(unittest.TestCase):
         settings.database_path = self.previous_database_path
         self.temp.cleanup()
 
+    def test_connections_use_normal_synchronous_mode(self):
+        with connect() as db:
+            self.assertEqual(db.execute("PRAGMA synchronous").fetchone()[0], 1)
+
+        writer = ScanDatabaseWriter()
+        db = writer._connect()
+        try:
+            self.assertEqual(db.execute("PRAGMA synchronous").fetchone()[0], 1)
+        finally:
+            db.close()
+
     def test_concurrent_operations_share_batched_writer(self):
         writer = ScanDatabaseWriter(batch_window_seconds=0.05)
         writer.start()
