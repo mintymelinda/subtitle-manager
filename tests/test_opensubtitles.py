@@ -2,6 +2,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -234,7 +235,7 @@ class OpenSubtitlesTests(unittest.TestCase):
 
                 def opener(request, timeout=30):
                     calls.append(request)
-                    raise __import__("urllib.error").error.HTTPError(
+                    raise urllib.error.HTTPError(
                         request.full_url, status, "provider response", {}, None
                     )
 
@@ -252,8 +253,6 @@ class OpenSubtitlesTests(unittest.TestCase):
                 self.assertEqual(len(calls), 2 if status == 429 else 1)
 
     def test_download_link_http_errors_are_classified_without_exposing_url(self):
-        import urllib.error
-
         def opener(request, timeout=60):
             raise urllib.error.HTTPError(
                 request.full_url, 403, "signed URL expired", {}, None
