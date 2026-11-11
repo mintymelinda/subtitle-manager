@@ -1,9 +1,11 @@
 import os
 import subprocess
+import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
@@ -21,6 +23,7 @@ from app.database import (
     create_job, start_job, update_job_progress, record_job_item, finish_job,
     get_job, list_jobs, recover_interrupted_jobs, clear_pending_review_queue, clear_saved_data,
     list_media_files, record_media_patch, reset_candidate_reviews_for_media,
+    set_provider_status, get_provider_status, clear_provider_status,
 )
 from app.media import inspect_media
 from app.opensubtitles import OpenSubtitlesClient, OpenSubtitlesError, assess_subtitle_payload
@@ -33,6 +36,7 @@ from app.provider_settings import (
 from app.languages import LANGUAGE_CODES, normalize_languages, language_matches
 
 app = FastAPI(title=settings.app_name)
+_quota_retry_lock = Lock()
 
 # Keep FFmpeg, provider requests, and SQLite writes bounded on modest hosts.
 SCAN_WORKERS = 3
@@ -77,7 +81,73 @@ def startup():
     patches = recover_interrupted_patches()
     jobs = recover_interrupted_jobs()
     logger.warning("startup_recovery", extra={"event":"startup_recovery","status":"interrupted","error_type":f"patches={patches},jobs={jobs}"})
+    Thread(target=_quota_retry_loop, name="opensubtitles-quota-retry", daemon=True).start()
 
+
+def _quota_retry_loop():
+    """Retry only media files with candidates deferred by an OpenSubtitles quota response."""
+    while True:
+        time.sleep(15)
+        state = get_provider_status()
+        if not state or state.get("status") != "quota_waiting":
+            continue
+        try:
+            retry_at = datetime.fromisoformat(state["retry_at"])
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) < retry_at.astimezone(timezone.utc):
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not _quota_retry_lock.acquire(blocking=False):
+            continue
+        try:
+            provider = load_provider_settings()
+            if not provider.get("api_key"):
+                continue
+            waiting = [row for row in list_candidates() if row.get("status") == "download_quota_reached"]
+            if not waiting:
+                clear_provider_status()
+                continue
+            media_by_path = {item["relative_path"]: item for item in list_media_files()}
+            media_root = Path(settings.media_root).resolve(strict=True)
+            client = OpenSubtitlesClient(provider["api_key"], provider["username"], provider["password"])
+            for relative_path in sorted({row["media_relative_path"] for row in waiting}):
+                media = media_by_path.get(relative_path)
+                if media is None:
+                    continue
+                source = media_root / relative_path
+                if not media_path_is_safe(source, media_root) or not source.is_file():
+                    continue
+                stat_result = source.stat()
+                if stat_result.st_size != media["size"] or stat_result.st_mtime != media["modified_at"]:
+                    continue
+                languages = sorted({row["language"] for row in waiting
+                    if row["media_relative_path"] == relative_path and row.get("language")}) or ["en"]
+                try:
+                    stage_candidates(client, source, media_root, stat_result,
+                        (media.get("inspection") or {}).get("metadata") or {}, languages)
+                except OpenSubtitlesError as exc:
+                    logger.warning("opensubtitles_quota_retry_failed",
+                        extra={"event":"opensubtitles_quota_retry_failed",
+                               "media_path":relative_path,"error_code":exc.error_code})
+                if client.quota_retry_at is not None:
+                    break
+            if client.quota_retry_at is None:
+                remaining = [row for row in list_candidates()
+                    if row.get("status") == "download_quota_reached"]
+                if not remaining:
+                    clear_provider_status()
+                else:
+                    set_provider_status("quota_waiting",
+                        "OpenSubtitles download limit reached. Waiting before retrying.",
+                        error_code="download_quota_reached",
+                        retry_at=(datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat())
+        except Exception:
+            logger.exception("opensubtitles_quota_retry_worker_failed",
+                extra={"event":"opensubtitles_quota_retry_worker_failed"})
+        finally:
+            _quota_retry_lock.release()
 
 def media_path_is_safe(path: Path, root: Path) -> bool:
     try:
@@ -159,6 +229,9 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                     downloaded = client.download_if_available(candidate["file_id"])
                 if downloaded is None:
                     status = "download_quota_reached"
+                    retry_at = client.quota_retry_at or (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+                    set_provider_status("quota_waiting", "OpenSubtitles download limit reached. Waiting before retrying.",
+                        error_code="download_quota_reached", retry_at=retry_at)
                 else:
                     file_name, payload, remaining = downloaded
                     with timed_stage("candidate_content_assessment",
@@ -210,14 +283,21 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                         status = "staged"
                         logger.info("subtitle_candidate_staged", extra={"event":"subtitle_candidate_staged","candidate_id":row["id"],"media_path":relative_media_path,"phase":"download","status":"staged"})
             except OpenSubtitlesError as exc:
+                quota_error = exc.error_code == "download_quota_reached"
                 with timed_stage("candidate_database_mark_error",
                                  media_path=relative_media_path, candidate_id=row["id"]):
-                    mark_candidate_error(row["id"], str(exc), writer=database_writer)
-                status = "download_failed"
+                    mark_candidate_error(row["id"], str(exc),
+                        status="download_quota_reached" if quota_error else "download_failed",
+                        writer=database_writer)
+                status = "download_quota_reached" if quota_error else "download_failed"
+                if quota_error:
+                    retry_at = exc.retry_at or (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+                    set_provider_status("quota_waiting", str(exc), error_code=exc.error_code, retry_at=retry_at)
                 failure_details = {
                     "error_code": exc.error_code,
                     "retryable": exc.retryable,
                     "http_status": exc.http_status,
+                    "retry_at": exc.retry_at,
                 }
                 logger.warning(
                     "subtitle_candidate_download_failed",
@@ -277,6 +357,7 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
             "status": status,
             "error_code": failure_details.get("error_code"),
             "retryable": failure_details.get("retryable"),
+            "retry_at": failure_details.get("retry_at"),
         })
     for candidate in candidates[len(selected):]:
         logger.debug(
@@ -332,6 +413,7 @@ input{box-sizing:border-box;width:100%;padding:.7rem;margin:.5rem 0 1rem;border-
 </style></head><body><h1>Subtitle Manager</h1>
 <p>Find missing English subtitles and review candidates before changing media.</p>
 <div class="notice"><strong>Safety:</strong> scanning and downloads never change media. Injection requires a separately approved candidate and a second confirmation. Current mode: <strong id="mode">loading…</strong>.</div>
+<div id="provider-quota-notice" class="notice warning" hidden aria-live="polite"></div>
 <section class="panel"><h2>OpenSubtitles setup</h2>
 <p>Create an API key at <a href="https://www.opensubtitles.com/en/consumers" target="_blank" rel="noopener">OpenSubtitles.com</a>, then save it here. Settings are stored in the persistent application data volume, not returned by the API or shown in logs.</p>
 <p id="provider-status" aria-live="polite">Checking saved provider settings…</p>
@@ -828,8 +910,30 @@ async function resumeLatestJob(){
   status.textContent=(latest.kind==="scan"?"Scan ":"Job ")+latest.status+" (restored from saved history).";
  }catch(e){status.textContent="Could not restore previous progress: "+e.message;}
 }
+async function refreshProviderQuotaStatus(){
+ try{
+  const response=await fetch("/api/provider/status",{headers:{"Accept":"application/json"}});
+  const state=await response.json();
+  const notice=document.querySelector("#provider-quota-notice");
+  if(!response.ok)throw new Error(state.detail||response.statusText);
+  if(state.status==="quota_waiting"){
+   const retry=state.retry_at?new Date(state.retry_at):null;
+   notice.textContent="OpenSubtitles download limit reached. Waiting to retry"
+    +(retry&&!Number.isNaN(retry.getTime())? " after "+retry.toLocaleString()+".":".")
+    +" Candidates waiting for the limit to clear will be retried automatically.";
+   notice.hidden=false;
+  }else{notice.hidden=true;notice.textContent="";}
+ }catch(error){console.warn("Could not refresh OpenSubtitles quota status:",error);}
+}
+refreshProviderQuotaStatus();
+setInterval(refreshProviderQuotaStatus,30000);
 resumeLatestJob();
 </script></body></html>""")
+
+
+@app.get("/api/provider/status")
+def provider_status():
+    return get_provider_status() or {"status": "available", "retry_at": None}
 
 
 @app.get("/api/health")
