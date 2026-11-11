@@ -230,8 +230,14 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                 if downloaded is None:
                     status = "download_quota_reached"
                     retry_at = client.quota_retry_at or (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
-                    set_provider_status("quota_waiting", "OpenSubtitles download limit reached. Waiting before retrying.",
+                    quota_message = "OpenSubtitles download limit reached. Waiting before retrying."
+                    mark_candidate_error(row["id"], quota_message, status="download_quota_reached",
+                        writer=database_writer)
+                    set_provider_status("quota_waiting", quota_message,
                         error_code="download_quota_reached", retry_at=retry_at)
+                    failure_details = {"error_code":"download_quota_reached",
+                        "retryable":True,"http_status":406 if client.quota_retry_at else None,
+                        "retry_at":retry_at}
                 else:
                     file_name, payload, remaining = downloaded
                     with timed_stage("candidate_content_assessment",
