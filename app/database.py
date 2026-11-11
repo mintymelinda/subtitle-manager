@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from app.config import settings
+from app.observability import timed_stage
 
 
 SQLITE_BUSY_TIMEOUT_MS = 30_000
@@ -210,26 +211,33 @@ def record_scan(relative_path: str, size: int | None, modified_at: float | None,
                 inspection: dict | None = None, *, modified_ns: int | None = None,
                 device: int | None = None, inode: int | None = None):
     with connect() as db:
-        previous = db.execute(
-            "SELECT modified_ns, device, inode FROM media_files WHERE relative_path=?",
-            (relative_path,),
-        ).fetchone()
+        with timed_stage("scan_record_db_previous_lookup", media_path=relative_path,
+                         database_operation="select_previous_identity"):
+            previous = db.execute(
+                "SELECT modified_ns, device, inode FROM media_files WHERE relative_path=?",
+                (relative_path,),
+            ).fetchone()
         if previous is not None and (
             previous["modified_ns"], previous["device"], previous["inode"]
         ) != (modified_ns, device, inode):
             # A changed file version invalidates old approvals, even when its
             # size and coarse modification timestamp happen to be identical.
-            db.execute(
-                """UPDATE subtitle_candidates
-                   SET review_decision='pending', review_updated_at=NULL,
-                       patch_status=CASE WHEN patch_status='patched' THEN 'not_started' ELSE patch_status END,
-                       patch_started_at=CASE WHEN patch_status='patched' THEN NULL ELSE patch_started_at END,
-                       patch_completed_at=CASE WHEN patch_status='patched' THEN NULL ELSE patch_completed_at END,
-                       updated_at=CURRENT_TIMESTAMP
-                   WHERE media_relative_path=? AND patch_status!='running'""",
-                (relative_path,),
-            )
-        db.execute("""
+            with timed_stage("scan_record_db_invalidate_candidates",
+                             media_path=relative_path,
+                             database_operation="invalidate_changed_media_candidates"):
+                db.execute(
+                    """UPDATE subtitle_candidates
+                       SET review_decision='pending', review_updated_at=NULL,
+                           patch_status=CASE WHEN patch_status='patched' THEN 'not_started' ELSE patch_status END,
+                           patch_started_at=CASE WHEN patch_status='patched' THEN NULL ELSE patch_started_at END,
+                           patch_completed_at=CASE WHEN patch_status='patched' THEN NULL ELSE patch_completed_at END,
+                           updated_at=CURRENT_TIMESTAMP
+                       WHERE media_relative_path=? AND patch_status!='running'""",
+                    (relative_path,),
+                )
+        with timed_stage("scan_record_db_media_upsert", media_path=relative_path,
+                         database_operation="upsert_media_inspection"):
+            db.execute("""
             INSERT INTO media_files(
                 relative_path, size, modified_at, modified_ns, device, inode,
                 has_verified_english_subtitle, inspection_json
@@ -247,7 +255,7 @@ def record_scan(relative_path: str, size: int | None, modified_at: float | None,
             relative_path, size, modified_at, modified_ns, device, inode,
             int(bool((inspection or {}).get("has_verified_english_subtitle"))),
             json.dumps(inspection or {}),
-        ))
+            ))
 
 
 def save_candidate(media_relative_path: str, media_size: int, media_modified_at: float,
