@@ -63,6 +63,7 @@ class ScanDatabaseWriter:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA busy_timeout=30000")
             db.execute("PRAGMA foreign_keys=ON")
+            db.execute("PRAGMA synchronous=NORMAL")
         return db
 
     def _process_batch(self, db, batch):
