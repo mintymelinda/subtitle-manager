@@ -8,10 +8,6 @@ class Settings(BaseSettings):
     database_path: str = "/app/data/subtitle-manager.sqlite3"
     media_root: str = "/media"
     test_mode: bool = False
-    open_subtitles_api_key: str = ""
-    open_subtitles_username: str = ""
-    open_subtitles_password: str = ""
-    open_subtitles_max_candidates_per_file: int = 2
     subtitle_staging_path: str = "/app/data/staged-subtitles"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False)
