@@ -39,10 +39,22 @@ CAPTURED_EVENTS = {
 class ProfileCapture(logging.Handler):
     """Collect structured scan telemetry without printing one line per event."""
 
-    def __init__(self):
+    def __init__(self, media_root: Path):
         super().__init__(level=logging.INFO)
+        self.media_root = media_root.resolve()
         self.stages = []
         self.events = []
+
+    def _relative_media_path(self, value):
+        if not value:
+            return value
+        try:
+            path = Path(value)
+            if path.is_absolute():
+                return path.resolve(strict=False).relative_to(self.media_root).as_posix()
+        except (OSError, ValueError):
+            pass
+        return value
 
     def emit(self, record):
         event = getattr(record, "event", None)
@@ -50,7 +62,7 @@ class ProfileCapture(logging.Handler):
             self.stages.append({
                 "stage": getattr(record, "stage", "unknown"),
                 "elapsed_ms": getattr(record, "elapsed_ms", None),
-                "media_path": getattr(record, "media_path", None),
+                "media_path": self._relative_media_path(getattr(record, "media_path", None)),
                 "bytes_processed": getattr(record, "bytes_processed", None),
                 "file_size_bytes": getattr(record, "file_size_bytes", None),
                 "tool": getattr(record, "tool", None),
@@ -150,7 +162,7 @@ def main():
     for handler in logging.getLogger().handlers:
         handler.setLevel(logging.WARNING)
     logger.setLevel(logging.INFO)
-    capture = ProfileCapture()
+    capture = ProfileCapture(media_root)
     logger.addHandler(capture)
     original_scan_one_file = scan_module._scan_one_file
 
