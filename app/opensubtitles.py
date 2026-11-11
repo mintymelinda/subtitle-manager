@@ -81,7 +81,6 @@ def episode_numbers(path: Path) -> tuple[int, int] | None:
     )
     for pattern in patterns:
         match = re.search(pattern, path.stem)
-                                r"\b(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*UTC\b",
             return int(match.group("season")), int(match.group("episode"))
     return None
 
@@ -305,6 +304,7 @@ class OpenSubtitlesClient:
                     if retry_at is None:
                         for message in messages:
                             match = re.search(
+                                r"\b(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*UTC\b",
                                 message,
                             )
                             if match:
