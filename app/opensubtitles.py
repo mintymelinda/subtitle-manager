@@ -305,7 +305,6 @@ class OpenSubtitlesClient:
                     if retry_at is None:
                         for message in messages:
                             match = re.search(
-                                r"\\b(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})\\s*UTC\\b",
                                 message,
                             )
                             if match:
