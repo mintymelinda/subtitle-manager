@@ -221,6 +221,58 @@ class OpenSubtitlesTests(unittest.TestCase):
         self.assertEqual(sum(result is not None for result in results), 2)
         self.assertEqual(client.remaining_downloads, 0)
 
+    def test_provider_http_errors_expose_safe_retry_diagnostics(self):
+        cases = (
+            (403, "authentication_rejected", False),
+            (429, "rate_limited", True),
+            (503, "provider_unavailable", True),
+            (422, "provider_request_rejected", False),
+        )
+        for status, expected_code, expected_retryable in cases:
+            with self.subTest(status=status):
+                calls = []
+
+                def opener(request, timeout=30):
+                    calls.append(request)
+                    raise __import__("urllib.error").error.HTTPError(
+                        request.full_url, status, "provider response", {}, None
+                    )
+
+                client = OpenSubtitlesClient(
+                    "test-secret", opener=opener, sleeper=lambda _seconds: None
+                )
+                with self.assertRaises(OpenSubtitlesError) as raised:
+                    client._json_request("/subtitles")
+
+                error = raised.exception
+                self.assertEqual(error.error_code, expected_code)
+                self.assertEqual(error.retryable, expected_retryable)
+                self.assertEqual(error.http_status, status)
+                self.assertNotIn("provider response", str(error))
+                self.assertEqual(len(calls), 2 if status == 429 else 1)
+
+    def test_download_link_http_errors_are_classified_without_exposing_url(self):
+        import urllib.error
+
+        def opener(request, timeout=60):
+            raise urllib.error.HTTPError(
+                request.full_url, 403, "signed URL expired", {}, None
+            )
+
+        client = OpenSubtitlesClient("test-secret", opener=opener)
+        with patch.object(client, "_json_request", return_value={
+            "link": "https://www.opensubtitles.com/download/temporary-token",
+            "file_name": "candidate.srt",
+        }):
+            with self.assertRaises(OpenSubtitlesError) as raised:
+                client.download(123)
+
+        error = raised.exception
+        self.assertEqual(error.error_code, "download_link_rejected")
+        self.assertTrue(error.retryable)
+        self.assertEqual(error.http_status, 403)
+        self.assertNotIn("temporary-token", str(error))
+
     def test_empty_api_key_is_rejected(self):
         with self.assertRaises(OpenSubtitlesError):
             OpenSubtitlesClient("")
