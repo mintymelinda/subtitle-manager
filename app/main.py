@@ -149,6 +149,7 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
             "content_language": row.get("content_language"),
             "content_confidence": row.get("content_language_confidence"),
         }
+        failure_details = {}
         if should_cancel is not None and should_cancel():
             status = "cancelled"
         if status not in {"staged", "cancelled"}:
@@ -274,10 +275,9 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
             "content_language": assessment.get("content_language"),
             "content_confidence": assessment.get("content_confidence"),
             "status": status,
-            "error_code": failure_details.get("error_code") if "failure_details" in locals() else None,
-            "retryable": failure_details.get("retryable") if "failure_details" in locals() else None,
+            "error_code": failure_details.get("error_code"),
+            "retryable": failure_details.get("retryable"),
         })
-        failure_details = {}
     for candidate in candidates[len(selected):]:
         logger.debug(
             "subtitle_candidate_not_downloaded",
