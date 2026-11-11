@@ -272,6 +272,44 @@ class OpenSubtitlesTests(unittest.TestCase):
         self.assertEqual(error.http_status, 403)
         self.assertNotIn("temporary-token", str(error))
 
+    def test_download_406_quota_response_exposes_reset_time(self):
+        body = __import__("json").dumps({
+            "message": "Daily limit quota exceeded",
+            "reset_at": "2026-11-12T00:00:00Z",
+        }).encode()
+        def opener(request, timeout=30):
+            raise urllib.error.HTTPError(request.full_url, 406, "Not Acceptable", {},
+                __import__("io").BytesIO(body))
+        client = OpenSubtitlesClient("test-secret", opener=opener)
+        with self.assertRaises(OpenSubtitlesError) as raised:
+            client._json_request("/download", body={"file_id": 123})
+        error = raised.exception
+        self.assertEqual(error.error_code, "download_quota_reached")
+        self.assertTrue(error.retryable)
+        self.assertEqual(error.http_status, 406)
+        self.assertEqual(error.retry_at, "2026-11-12T00:00:00+00:00")
+        self.assertNotIn("Daily limit quota exceeded", str(error))
+        self.assertEqual(client.quota_retry_at, error.retry_at)
+
+    def test_download_406_without_quota_message_is_not_misclassified(self):
+        body = __import__("json").dumps({"message": "Invalid file_id"}).encode()
+        def opener(request, timeout=30):
+            raise urllib.error.HTTPError(request.full_url, 406, "Not Acceptable", {},
+                __import__("io").BytesIO(body))
+        client = OpenSubtitlesClient("test-secret", opener=opener)
+        with self.assertRaises(OpenSubtitlesError) as raised:
+            client._json_request("/download", body={"file_id": 123})
+        self.assertEqual(raised.exception.error_code, "provider_request_rejected")
+        self.assertFalse(raised.exception.retryable)
+        self.assertIsNone(client.quota_retry_at)
+
+    def test_quota_block_prevents_further_download_requests(self):
+        client = OpenSubtitlesClient("test-secret")
+        client.quota_retry_at = "2026-11-12T00:00:00+00:00"
+        with patch.object(client, "download") as download:
+            self.assertIsNone(client.download_if_available(123))
+        download.assert_not_called()
+
     def test_empty_api_key_is_rejected(self):
         with self.assertRaises(OpenSubtitlesError):
             OpenSubtitlesClient("")
