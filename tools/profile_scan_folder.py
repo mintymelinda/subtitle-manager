@@ -8,6 +8,7 @@ import argparse
 import json
 import logging
 import math
+import os
 import statistics
 import sys
 import time
@@ -154,6 +155,7 @@ def main():
         help="target language codes (default: en)",
     )
     args = parser.parse_args()
+    api_key_override = os.environ.get("PROFILE_OPENSUBTITLES_API_KEY", "").strip() or None
 
     media_root = Path(settings.media_root).resolve(strict=True)
     folder = Path(args.folder).resolve(strict=True)
@@ -200,7 +202,9 @@ def main():
         })
         job_id = job["id"]
         scan_module._scan_one_file = timed_scan_one_file
-        scan_module._scan_worker(job_id, media_root, [folder], languages)
+        scan_module._scan_worker(
+            job_id, media_root, [folder], languages, api_key_override=api_key_override
+        )
         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
         job_result = get_job(job_id)
     finally:
@@ -215,6 +219,7 @@ def main():
         "folder": str(folder),
         "media_root": str(media_root),
         "target_languages": languages,
+        "opensubtitles_api_key_override": bool(api_key_override),
         "job_id": job_id,
         "job_status": job_result["status"] if job_result else "missing",
         "job_progress": {
@@ -246,6 +251,7 @@ def main():
             "File wall-clock timings include cache lookup and all per-file work.",
             "Stage timings are nested. Do not add a parent stage to its child stages.",
             "A configured OpenSubtitles provider may perform real searches and candidate downloads.",
+            "PROFILE_OPENSUBTITLES_API_KEY overrides only the API key for this profiler run; saved settings are unchanged.",
         ],
     }
     print("SCAN_FOLDER_PROFILE " + json.dumps(report, sort_keys=True))

@@ -4,8 +4,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from app.config import settings
-
 
 def settings_path() -> Path:
     return Path(os.environ.get("SUBTITLE_SETTINGS_PATH", "/app/data/opensubtitles-settings.json"))
@@ -29,12 +27,11 @@ def load_provider_settings() -> dict[str, Any]:
                 }
         except (OSError, ValueError, TypeError):
             raise RuntimeError("Saved OpenSubtitles settings could not be read. Check the persistent settings file.")
-    # One-time compatibility migration for existing .env deployments.
     return {
-        "api_key": settings.open_subtitles_api_key.strip(),
-        "username": settings.open_subtitles_username.strip(),
-        "password": settings.open_subtitles_password,
-        "max_candidates_per_file": max(1, min(5, int(settings.open_subtitles_max_candidates_per_file))),
+        "api_key": "",
+        "username": "",
+        "password": "",
+        "max_candidates_per_file": 2,
         "log_level": "INFO",
     }
 

@@ -1621,8 +1621,17 @@ def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
         }
 
 
+def _load_scan_provider_settings(api_key_override: str | None = None) -> dict:
+    """Load saved provider settings, applying an optional scan-scoped API key."""
+    provider = load_provider_settings()
+    if api_key_override:
+        provider = {**provider, "api_key": api_key_override}
+    return provider
+
+
 def _scan_worker(job_id: int, root: Path, scan_roots: list[Path],
-                 target_languages: list[str] | None = None):
+                 target_languages: list[str] | None = None,
+                 api_key_override: str | None = None):
     database_writer = ScanDatabaseWriter()
     database_writer.start()
     try:
@@ -1662,7 +1671,7 @@ def _scan_worker(job_id: int, root: Path, scan_roots: list[Path],
                    "status": f"{len(paths)} supported MKV files across {len(scan_roots)} selected folder(s)"},
         )
         update_job_progress(job_id, phase="inspecting", total=len(paths), writer=database_writer)
-        provider = load_provider_settings()
+        provider = _load_scan_provider_settings(api_key_override)
         client = (
             OpenSubtitlesClient(provider["api_key"], provider["username"], provider["password"])
             if provider["api_key"] else None
