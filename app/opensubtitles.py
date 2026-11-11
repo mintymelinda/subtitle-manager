@@ -81,7 +81,7 @@ def episode_numbers(path: Path) -> tuple[int, int] | None:
     )
     for pattern in patterns:
         match = re.search(pattern, path.stem)
-        if match:
+                                r"\b(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*UTC\b",
             return int(match.group("season")), int(match.group("episode"))
     return None
 
