@@ -11,32 +11,52 @@ SQLITE_BUSY_TIMEOUT_MS = 30_000
 
 
 @contextmanager
-def connect():
+def connect(operation: str | None = None):
     """Open a short-lived SQLite connection with bounded lock waiting.
 
     The context manager commits successful work, rolls back failures, and always
     closes the connection. sqlite3.Connection's built-in context manager does
     not close connections, which can otherwise leave file handles alive longer
-    than intended.
+    than intended. An optional operation name enables targeted connection and
+    transaction timing for scan profiling.
     """
     db_path = Path(settings.database_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(
-        db_path,
-        timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
-        check_same_thread=True,
-    )
-    connection.row_factory = sqlite3.Row
-    connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-    connection.execute("PRAGMA foreign_keys=ON")
+    if operation:
+        with timed_stage(f"{operation}_db_connection_setup"):
+            connection = sqlite3.connect(
+                db_path,
+                timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
+                check_same_thread=True,
+            )
+            connection.row_factory = sqlite3.Row
+            connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+            connection.execute("PRAGMA foreign_keys=ON")
+    else:
+        connection = sqlite3.connect(
+            db_path,
+            timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
+            check_same_thread=True,
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        connection.execute("PRAGMA foreign_keys=ON")
     try:
         yield connection
-        connection.commit()
+        if operation:
+            with timed_stage(f"{operation}_db_commit"):
+                connection.commit()
+        else:
+            connection.commit()
     except Exception:
         connection.rollback()
         raise
     finally:
-        connection.close()
+        if operation:
+            with timed_stage(f"{operation}_db_close"):
+                connection.close()
+        else:
+            connection.close()
 
 
 def initialize():
@@ -210,7 +230,7 @@ def get_cached_scan(relative_path: str, stat_result) -> dict | None:
 def record_scan(relative_path: str, size: int | None, modified_at: float | None,
                 inspection: dict | None = None, *, modified_ns: int | None = None,
                 device: int | None = None, inode: int | None = None):
-    with connect() as db:
+    with connect("scan_record") as db:
         with timed_stage("scan_record_db_previous_lookup", media_path=relative_path,
                          database_operation="select_previous_identity"):
             previous = db.execute(
