@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app import provider_settings
+from app.main import _load_scan_provider_settings
 
 
 class ProviderSettingsTests(unittest.TestCase):
@@ -99,6 +100,30 @@ class ProviderSettingsTests(unittest.TestCase):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps({"api_key": "secret-key", "log_level": "TRACE"}))
         self.assertEqual(provider_settings.load_provider_settings()["log_level"], "INFO")
+
+    def test_scan_api_key_override_is_scoped_and_does_not_mutate_saved_settings(self):
+        provider_settings.save_provider_settings(
+            api_key="saved-key", username="viewer", password="secret-password",
+            max_candidates_per_file=3,
+        )
+
+        effective = _load_scan_provider_settings("temporary-key")
+
+        self.assertEqual(effective["api_key"], "temporary-key")
+        self.assertEqual(effective["username"], "viewer")
+        self.assertEqual(effective["password"], "secret-password")
+        self.assertEqual(effective["max_candidates_per_file"], 3)
+        self.assertEqual(provider_settings.load_provider_settings()["api_key"], "saved-key")
+
+    def test_scan_provider_settings_use_saved_key_without_override(self):
+        provider_settings.save_provider_settings(
+            api_key="saved-key", username="", password="", max_candidates_per_file=2,
+        )
+
+        effective = _load_scan_provider_settings()
+
+        self.assertEqual(effective["api_key"], "saved-key")
+        self.assertEqual(provider_settings.load_provider_settings()["api_key"], "saved-key")
 
     def test_public_settings_never_expose_secrets(self):
         provider_settings.save_provider_settings(
