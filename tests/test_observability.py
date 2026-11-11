@@ -32,9 +32,17 @@ class ObservabilityTests(unittest.TestCase):
         record.phase = "candidate_selection"
         record.filter_reason = "unsupported_language"
         record.provider_count = 13
+        record.error_code = "download_rate_limited"
+        record.retryable = True
+        record.http_status = 429
+        record.error_message = "Provider rate limit; api_key=must-not-appear"
         payload = json.loads(JsonFormatter().format(record))
         self.assertEqual(payload["filter_reason"], "unsupported_language")
         self.assertEqual(payload["provider_count"], 13)
+        self.assertEqual(payload["error_code"], "download_rate_limited")
+        self.assertIs(payload["retryable"], True)
+        self.assertEqual(payload["http_status"], 429)
+        self.assertEqual(payload["error_message"], "Provider rate limit; api_key=[REDACTED]")
         self.assertNotIn("must-not-appear", json.dumps(payload))
         self.assertIn("api_key=[REDACTED]", payload["message"])
 
