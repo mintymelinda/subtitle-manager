@@ -81,7 +81,8 @@ def episode_numbers(path: Path) -> tuple[int, int] | None:
     )
     for pattern in patterns:
         match = re.search(pattern, path.stem)
-        return int(match.group("season")), int(match.group("episode"))
+        if match:
+            return int(match.group("season")), int(match.group("episode"))
     return None
 
 
