@@ -2,6 +2,26 @@
 
 All notable changes to Subtitle Manager are documented here.
 
+## [1.0.3] - 2026-11-11
+
+### Added
+- Add an explicit, separately confirmed automatic subtitle cleanup action for files with no retained subtitle tracks.
+- Add real-folder scan and opt-in real-media injection profiling tools.
+- Add actionable, sanitized OpenSubtitles download diagnostics, including provider error details in structured logs.
+- Detect daily OpenSubtitles download quota exhaustion, persist reset information, pause affected downloads, and retry deferred candidates when the quota is expected to renew.
+- Add a profiler-only OpenSubtitles API-key override without changing saved provider credentials.
+
+### Improved
+- Cache media inspection results for unchanged files, avoiding repeated FFprobe and subtitle-content inspection.
+- Run discovery and staging with bounded concurrency while keeping FFmpeg/FFprobe execution serialized.
+- Move inventory traversal into the background scan job so scan requests return promptly.
+- Serialize and batch SQLite scan writes, and use SQLite NORMAL synchronous mode for scan-writer connections.
+- Add detailed scan-stage and database-writer timing instrumentation to make future performance regressions diagnosable.
+- Remove obsolete application environment settings and the legacy OpenSubtitles .env credential fallback.
+
+### Performance
+- Reduce the measured 144-file Futurama scan from over an hour to approximately 56 seconds while completing all files and successfully staging ten subtitle candidates.
+
 ## [1.0.2] - 2026-11-09
 
 ### Added
@@ -28,7 +48,7 @@ First stable release.
 - Persistent SQLite state for jobs, candidates, approvals, and patch history.
 - Safe mounted-media browsing and path/symlink boundary checks.
 - Structured, credential-redacted JSON logs.
-- Clear saved data & caches action, including recursive removal of regular `.bak` files under `/media`.
+- Clear saved data & caches action, including recursive removal of regular .bak files under /media.
 
 ### Supported scope
 - MKV is the only supported container for scanning and subtitle injection.
