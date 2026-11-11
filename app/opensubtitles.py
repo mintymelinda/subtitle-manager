@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 import struct
 import time
 import urllib.error
@@ -42,11 +43,13 @@ class OpenSubtitlesError(RuntimeError):
         error_code: str = "provider_error",
         retryable: bool = False,
         http_status: int | None = None,
+        retry_at: str | None = None,
     ):
         super().__init__(message)
         self.error_code = error_code
         self.retryable = retryable
         self.http_status = http_status
+        self.retry_at = retry_at
 
 
 def compute_moviehash(path: Path) -> str | None:
@@ -233,6 +236,74 @@ class OpenSubtitlesClient:
                             self.base_url = returned
                 return payload
         except urllib.error.HTTPError as exc:
+            if exc.code == 406 and endpoint == "/download":
+                response_body = b""
+                try:
+                    response_body = exc.read(16_384)
+                except OSError:
+                    pass
+                try:
+                    details = json.loads(response_body.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    details = {}
+
+                messages = []
+                reset_values = []
+                def inspect_error(value, key=""):
+                    if isinstance(value, dict):
+                        for child_key, child in value.items():
+                            normalized_key = str(child_key).lower()
+                            if normalized_key in {"message", "error", "detail", "description"} and isinstance(child, str):
+                                messages.append(child[:500])
+                            if normalized_key in {"reset_at", "reset_time", "retry_at", "retry_after", "next_reset", "quota_reset"}:
+                                reset_values.append(child)
+                            inspect_error(child, normalized_key)
+                    elif isinstance(value, list):
+                        for child in value[:10]:
+                            inspect_error(child, key)
+                inspect_error(details)
+                provider_text = " ".join(messages).lower()
+                quota_match = any(term in provider_text for term in (
+                    "quota exceeded", "daily limit", "download limit",
+                    "download quota", "limit exceeded", "downloads limit",
+                ))
+                if quota_match:
+                    retry_at = None
+                    for value in reset_values:
+                        try:
+                            if isinstance(value, (int, float)) or str(value).isdigit():
+                                seconds = float(value)
+                                if seconds > 10_000_000_000:
+                                    retry_at = datetime.fromtimestamp(seconds / 1000, timezone.utc)
+                                elif seconds > 1_000_000_000:
+                                    retry_at = datetime.fromtimestamp(seconds, timezone.utc)
+                                else:
+                                    retry_at = datetime.now(timezone.utc) + timedelta(seconds=max(0, seconds))
+                            else:
+                                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                                retry_at = parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+                            break
+                        except (TypeError, ValueError, OverflowError, OSError):
+                            continue
+                    if retry_at is None:
+                        retry_header = exc.headers.get("Retry-After") if exc.headers else None
+                        try:
+                            retry_at = datetime.now(timezone.utc) + timedelta(seconds=max(0, int(retry_header)))
+                        except (TypeError, ValueError):
+                            retry_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+                    raise OpenSubtitlesError(
+                        "OpenSubtitles download limit reached. Waiting before retrying.",
+                        error_code="download_quota_reached",
+                        retryable=True,
+                        http_status=406,
+                        retry_at=retry_at.astimezone(timezone.utc).isoformat(),
+                    ) from None
+                raise OpenSubtitlesError(
+                    "OpenSubtitles rejected this download request (HTTP 406).",
+                    error_code="provider_request_rejected",
+                    retryable=False,
+                    http_status=406,
+                ) from None
             if exc.code == 429 and retry_rate_limit:
                 self._sleep(2)
                 return self._json_request(
