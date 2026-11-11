@@ -45,12 +45,14 @@ class OpenSubtitlesError(RuntimeError):
         retryable: bool = False,
         http_status: int | None = None,
         retry_at: str | None = None,
+        provider_error_detail: str | None = None,
     ):
         super().__init__(message)
         self.error_code = error_code
         self.retryable = retryable
         self.http_status = http_status
         self.retry_at = retry_at
+        self.provider_error_detail = provider_error_detail
 
 
 def compute_moviehash(path: Path) -> str | None:
@@ -265,6 +267,16 @@ class OpenSubtitlesClient:
                             inspect_error(child, key)
                 inspect_error(details)
                 provider_text = " ".join(messages).lower()
+                # Keep only a short, sanitized provider message for diagnostics.
+                # Never retain raw response bodies, URLs, or arbitrary response fields.
+                provider_detail = messages[0] if messages else None
+                if provider_detail:
+                    from app.observability import redact
+                    provider_detail = redact(provider_detail)
+                    provider_detail = re.sub(r"https?://\\S+", "[URL REDACTED]", provider_detail)
+                    provider_detail = re.sub(r"[\\r\\n\\t]+", " ", provider_detail)
+                    provider_detail = "".join(ch for ch in provider_detail if ch.isprintable())[:240].strip()
+                    provider_detail = provider_detail or None
                 quota_match = any(term in provider_text for term in (
                     "quota exceeded", "daily limit", "download limit",
                     "download quota", "limit exceeded", "downloads limit",
@@ -303,12 +315,14 @@ class OpenSubtitlesClient:
                         retryable=True,
                         http_status=406,
                         retry_at=retry_at.astimezone(timezone.utc).isoformat(),
+                        provider_error_detail=provider_detail,
                     ) from None
                 raise OpenSubtitlesError(
                     "OpenSubtitles rejected this download request (HTTP 406).",
                     error_code="provider_request_rejected",
                     retryable=False,
                     http_status=406,
+                    provider_error_detail=provider_detail,
                 ) from None
             if exc.code == 429 and retry_rate_limit:
                 self._sleep(2)
