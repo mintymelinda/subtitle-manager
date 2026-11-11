@@ -42,7 +42,7 @@ def connect(operation: str | None = None, *, media_path: str | None = None):
         connection.row_factory = sqlite3.Row
         connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
         connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute("PRAGMA synchronous=NORMAL")
+        connection.execute("PRAGMA synchronous=NORMAL")
     try:
         yield connection
         if operation:
