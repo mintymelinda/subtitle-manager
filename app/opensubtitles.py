@@ -515,25 +515,49 @@ class OpenSubtitlesClient:
                 retryable=True,
             ) from None
         if len(payload) > MAX_DOWNLOAD_BYTES:
-            raise OpenSubtitlesError("Subtitle download exceeded the 25 MiB safety limit.")
+            raise OpenSubtitlesError(
+                "Subtitle download exceeded the 25 MiB safety limit.",
+                error_code="download_too_large",
+                retryable=False,
+            )
         if payload.startswith(bytes((0x50, 0x4B, 0x03, 0x04))):
             suggested_name, payload = self._extract_zip(payload, suggested_name)
         extension = Path(suggested_name).suffix.lower()
         if extension not in SUPPORTED_EXTENSIONS:
-            raise OpenSubtitlesError("Downloaded file is not a supported subtitle format.")
+            raise OpenSubtitlesError(
+                "Downloaded file is not a supported subtitle format.",
+                error_code="unsupported_subtitle_format",
+                retryable=False,
+            )
         if not payload or payload.lstrip().lower().startswith((b"<!doctype html", b"<html")):
-            raise OpenSubtitlesError("Downloaded content is not a subtitle file.")
+            raise OpenSubtitlesError(
+                "Downloaded content is not a subtitle file.",
+                error_code="invalid_subtitle_payload",
+                retryable=False,
+            )
         if extension == ".srt" and not re.search(
             rb"[0-9]{2}:[0-9]{2}:[0-9]{2}[,.][0-9]{3} *--> *[0-9]{2}:[0-9]{2}:[0-9]{2}",
             payload,
         ):
-            raise OpenSubtitlesError("Downloaded SRT file does not contain valid subtitle timing.")
+            raise OpenSubtitlesError(
+                "Downloaded SRT file does not contain valid subtitle timing.",
+                error_code="invalid_srt_timing",
+                retryable=False,
+            )
         if extension in {".ass", ".ssa"}:
             text_payload = payload[:2 * 1024 * 1024].decode("utf-8-sig", errors="replace")
             if "[Events]" not in text_payload or "Dialogue:" not in text_payload:
-                raise OpenSubtitlesError("Downloaded ASS/SSA file does not contain subtitle events.")
+                raise OpenSubtitlesError(
+                    "Downloaded ASS/SSA file does not contain subtitle events.",
+                    error_code="invalid_ass_payload",
+                    retryable=False,
+                )
         if extension == ".sup" and len(payload) < 100:
-            raise OpenSubtitlesError("Downloaded bitmap subtitle file is unexpectedly small.")
+            raise OpenSubtitlesError(
+                "Downloaded bitmap subtitle file is unexpectedly small.",
+                error_code="invalid_sup_payload",
+                retryable=False,
+            )
         remaining = result.get("remaining")
         if remaining is not None:
             reported_remaining = int(remaining)
@@ -556,8 +580,16 @@ class OpenSubtitlesClient:
                     and info.file_size <= MAX_DOWNLOAD_BYTES
                 ]
                 if not matches:
-                    raise OpenSubtitlesError("Archive contains no supported subtitle file.")
+                    raise OpenSubtitlesError(
+                        "Archive contains no supported subtitle file.",
+                        error_code="archive_without_subtitle",
+                        retryable=False,
+                    )
                 selected = max(matches, key=lambda info: info.file_size)
                 return Path(selected.filename).name, archive.read(selected)
         except zipfile.BadZipFile:
-            raise OpenSubtitlesError("OpenSubtitles returned an invalid archive.") from None
+            raise OpenSubtitlesError(
+                "OpenSubtitles returned an invalid archive.",
+                error_code="invalid_archive",
+                retryable=False,
+            ) from None
