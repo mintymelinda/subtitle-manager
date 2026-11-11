@@ -34,7 +34,6 @@ CAPTURED_EVENTS = {
     "media_scan_failed",
     "profile_file_timing",
 }
-OUTER_FILE_STAGES = {"media_inspection", "candidate_staging"}
 
 
 class ProfileCapture(logging.Handler):
@@ -148,6 +147,8 @@ def main():
     languages = args.languages
 
     configure_logging("WARNING")
+    for handler in logging.getLogger().handlers:
+        handler.setLevel(logging.WARNING)
     logger.setLevel(logging.INFO)
     capture = ProfileCapture()
     logger.addHandler(capture)
