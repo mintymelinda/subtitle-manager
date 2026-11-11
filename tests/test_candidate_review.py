@@ -5,7 +5,7 @@ from pathlib import Path
 from app.config import settings
 from app.database import (
     initialize, record_scan, save_candidate, mark_candidate_staged,
-    list_candidates, set_candidate_decision,
+    list_candidates, set_candidate_decision, connect,
 )
 
 
@@ -48,6 +48,34 @@ class CandidateReviewDatabaseTests(unittest.TestCase):
                               {"content_status": "english", "content_language": "en",
                                "content_confidence": 0.99})
         return row["id"]
+
+    def test_unchanged_candidate_does_not_issue_an_update(self):
+        candidate = self.candidate(17)
+        with connect() as db:
+            db.execute("CREATE TABLE candidate_update_audit (candidate_id INTEGER)")
+            db.execute("""
+                CREATE TRIGGER audit_candidate_update
+                AFTER UPDATE ON subtitle_candidates
+                BEGIN
+                    INSERT INTO candidate_update_audit(candidate_id) VALUES (NEW.id);
+                END
+            """)
+
+        save_candidate(self.media_path, self.size, self.modified, candidate)
+        save_candidate(self.media_path, self.size, self.modified, candidate)
+        with connect() as db:
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM candidate_update_audit").fetchone()[0],
+                0,
+            )
+
+        changed = {**candidate, "match_score": candidate["match_score"] + 1}
+        save_candidate(self.media_path, self.size, self.modified, changed)
+        with connect() as db:
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM candidate_update_audit").fetchone()[0],
+                1,
+            )
 
     def test_review_decision_persists_and_is_visible_with_media_details(self):
         candidate_id = self.stage(11)

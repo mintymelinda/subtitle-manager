@@ -36,7 +36,8 @@ class JsonFormatter(logging.Formatter):
                      "filter_reason", "language", "file_count", "file_name", "file_id",
                      "match_score", "match_reasons", "moviehash_match", "download_count",
                      "candidate_limit", "selected_count", "remaining_count", "log_level", "stage", "elapsed_ms",
-                     "bytes_processed", "file_size_bytes", "stream_index", "stream_count", "tool"):
+                     "bytes_processed", "file_size_bytes", "stream_index", "stream_count", "tool",
+                     "database_operation", "batch_size", "operation_count", "queue_depth"):
             if hasattr(record, key):
                 payload[key] = getattr(record, key)
         if record.exc_info:

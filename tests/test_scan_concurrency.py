@@ -85,7 +85,7 @@ class ScanConcurrencyTests(unittest.TestCase):
             return inspection
 
         def stage(_client, path, _media_root, _stat, _metadata, _languages,
-                  should_cancel=None):
+                  should_cancel=None, database_writer=None):
             nonlocal active, peak
             with lock:
                 active += 1
@@ -135,7 +135,7 @@ class ScanConcurrencyTests(unittest.TestCase):
         calls = []
         lock = threading.Lock()
 
-        def process(job_id, _root, media_root, path, _client, _languages, _inspection_lock):
+        def process(job_id, _root, media_root, path, _client, _languages, _inspection_lock, database_writer=None):
             with lock:
                 calls.append(path.name)
             if path.name == paths[0].name:

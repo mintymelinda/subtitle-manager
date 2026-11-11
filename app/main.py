@@ -12,6 +12,8 @@ from fastapi.responses import HTMLResponse, FileResponse, PlainTextResponse
 from app.config import settings
 from app.observability import configure_logging, logger, timed_stage
 
+from app.scan_database_writer import ScanDatabaseWriter
+
 from app.database import (
     initialize, record_scan, get_cached_scan, save_candidate, mark_candidate_staged,
     mark_candidate_error, list_candidates, set_candidate_decision,
@@ -86,7 +88,7 @@ def media_path_is_safe(path: Path, root: Path) -> bool:
 
 def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                      stat_result, metadata: dict, target_languages: list[str] | None = None,
-                     should_cancel=None) -> dict:
+                     should_cancel=None, database_writer=None) -> dict:
     """Search and stage the top candidates outside the media mount."""
     if should_cancel is not None and should_cancel():
         return {"status": "cancelled", "found": 0, "staged": 0, "candidates": []}
@@ -132,6 +134,7 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                 media_modified_ns=stat_result.st_mtime_ns,
                 media_device=stat_result.st_dev,
                 media_inode=stat_result.st_ino,
+                writer=database_writer,
             )
         status = row["status"]
         logger.debug(
@@ -175,6 +178,7 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                                 row["id"],
                                 "Downloaded subtitle content does not match the candidate's declared language.",
                                 status="rejected_language_mismatch",
+                                writer=database_writer,
                             )
                         status = "rejected_language_mismatch"
                     else:
@@ -200,19 +204,20 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                                 row["id"], str(target), remaining, assessment,
                                 file_name=Path(file_name).name,
                                 subtitle_format=extension.lstrip("."),
+                                writer=database_writer,
                             )
                         status = "staged"
                         logger.info("subtitle_candidate_staged", extra={"event":"subtitle_candidate_staged","candidate_id":row["id"],"media_path":relative_media_path,"phase":"download","status":"staged"})
             except OpenSubtitlesError as exc:
                 with timed_stage("candidate_database_mark_error",
                                  media_path=relative_media_path, candidate_id=row["id"]):
-                    mark_candidate_error(row["id"], str(exc))
+                    mark_candidate_error(row["id"], str(exc), writer=database_writer)
                 status = "download_failed"
                 logger.warning("subtitle_candidate_download_failed", extra={"event":"subtitle_candidate_download_failed","candidate_id":row["id"],"media_path":relative_media_path,"phase":"download","error_type":type(exc).__name__})
             except OSError:
                 with timed_stage("candidate_database_mark_error",
                                  media_path=relative_media_path, candidate_id=row["id"]):
-                    mark_candidate_error(row["id"], "Could not write the staged subtitle file.")
+                    mark_candidate_error(row["id"], "Could not write the staged subtitle file.", writer=database_writer)
                 status = "download_failed"
         if status == "staged":
             summary["staged"] += 1
@@ -1291,7 +1296,8 @@ def _scan_job_is_running(job_id: int) -> bool:
 
 def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
                    client: OpenSubtitlesClient | None,
-                   target_languages: list[str], inspection_lock: Lock) -> dict | None:
+                   target_languages: list[str], inspection_lock: Lock,
+                   database_writer=None) -> dict | None:
     """Inspect and discover candidates for one file; safe to run in a worker thread."""
     media_relative_path = str(path.relative_to(media_root))
     if not _scan_job_is_running(job_id):
@@ -1309,7 +1315,7 @@ def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
         }
     try:
         stat_result = path.stat()
-        details = get_cached_scan(media_relative_path, stat_result)
+        details = get_cached_scan(media_relative_path, stat_result, writer=database_writer)
         if details is not None:
             current_stat = path.stat()
             if _scan_file_identity(current_stat) != _scan_file_identity(stat_result):
@@ -1350,6 +1356,7 @@ def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
                     media_relative_path, stat_result.st_size, stat_result.st_mtime,
                     details, modified_ns=stat_result.st_mtime_ns,
                     device=stat_result.st_dev, inode=stat_result.st_ino,
+                    writer=database_writer,
                 )
             logger.info(
                 "media_inspection_cache_miss",
@@ -1391,6 +1398,7 @@ def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
                         client, path, media_root, stat_result,
                         details.get("metadata") or {}, target_languages,
                         should_cancel=lambda: not _scan_job_is_running(job_id),
+                        database_writer=database_writer,
                     )
             except OpenSubtitlesError as exc:
                 logger.warning(
@@ -1434,15 +1442,17 @@ def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
 
 def _scan_worker(job_id: int, root: Path, scan_roots: list[Path],
                  target_languages: list[str] | None = None):
-    start_job(job_id)
+    database_writer = ScanDatabaseWriter()
+    database_writer.start()
     try:
+        start_job(job_id, writer=database_writer)
         if not _scan_job_is_running(job_id):
             return
         target_languages = normalize_languages(target_languages)
         media_root = Path(settings.media_root).resolve()
         paths = []
         seen = set()
-        update_job_progress(job_id, phase="inventory", total=0)
+        update_job_progress(job_id, phase="inventory", total=0, writer=database_writer)
         with timed_stage("scan_inventory", job_id=job_id, phase="discovery"):
             for selected_root in scan_roots:
                 if not _scan_job_is_running(job_id):
@@ -1470,7 +1480,7 @@ def _scan_worker(job_id: int, root: Path, scan_roots: list[Path],
                    "phase": "discovery", "file_count": len(paths),
                    "status": f"{len(paths)} supported MKV files across {len(scan_roots)} selected folder(s)"},
         )
-        update_job_progress(job_id, phase="inspecting", total=len(paths))
+        update_job_progress(job_id, phase="inspecting", total=len(paths), writer=database_writer)
         provider = load_provider_settings()
         client = (
             OpenSubtitlesClient(provider["api_key"], provider["username"], provider["password"])
@@ -1501,16 +1511,18 @@ def _scan_worker(job_id: int, root: Path, scan_roots: list[Path],
                 update_job_progress(
                     job_id, phase="inspecting",
                     current_file=valid_paths[0].relative_to(media_root).as_posix(),
+                    writer=database_writer,
                 )
                 for path in valid_paths:
                     record_job_item(
                         job_id, media_path=path.relative_to(media_root).as_posix(),
-                        status="running", phase="inspecting",
+                        status="running", phase="inspecting", writer=database_writer,
                     )
                 futures = [
                     executor.submit(
                         _scan_one_file, job_id, root, media_root, path,
-                        client, target_languages, inspection_lock
+                        client, target_languages, inspection_lock,
+                        database_writer=database_writer,
                     )
                     for path in valid_paths
                 ]
@@ -1529,6 +1541,7 @@ def _scan_worker(job_id: int, root: Path, scan_roots: list[Path],
                             details={"candidate_status": summary["status"],
                                      "candidates_found": summary["found"],
                                      "candidates_staged": summary["staged"]},
+                            writer=database_writer,
                         )
                         succeeded += 1
                         logger.info(
@@ -1541,16 +1554,18 @@ def _scan_worker(job_id: int, root: Path, scan_roots: list[Path],
                         record_job_item(
                             job_id, media_path=media_relative_path, status="failed",
                             phase=result["phase"], error=result["error"],
+                            writer=database_writer,
                         )
                         failed += 1
                     else:
                         record_job_item(
                             job_id, media_path=media_relative_path, status="cancelled",
-                            phase="cancelled",
+                            phase="cancelled", writer=database_writer,
                         )
                     completed += 1
                     update_job_progress(
                         job_id, completed=completed, succeeded=succeeded, failed=failed,
+                        writer=database_writer,
                     )
                 logger.info(
                     "scan_batch_completed",
@@ -1560,19 +1575,24 @@ def _scan_worker(job_id: int, root: Path, scan_roots: list[Path],
                 )
                 if not _scan_job_is_running(job_id):
                     return
-        finish_job(job_id, "completed", f"{failed} file(s) failed." if failed else None)
+        finish_job(job_id, "completed", f"{failed} file(s) failed." if failed else None,
+                   writer=database_writer)
         logger.info(
             "scan_job_completed",
             extra={"event": "scan_job_completed", "job_id": job_id,
                    "phase": "completed", "status": "completed"},
         )
     except Exception as exc:
-        finish_job(job_id, "failed", f"{type(exc).__name__}: {str(exc)[:400]}")
+        finish_job(job_id, "failed", f"{type(exc).__name__}: {str(exc)[:400]}",
+                   writer=database_writer)
         logger.exception(
             "scan_job_failed",
             extra={"event": "scan_job_failed", "job_id": job_id,
                    "phase": "scan", "error_type": type(exc).__name__},
         )
+
+    finally:
+        database_writer.close()
 
 
 @app.post("/api/scan")
