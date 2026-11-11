@@ -291,6 +291,32 @@ class OpenSubtitlesTests(unittest.TestCase):
         self.assertNotIn("Daily limit quota exceeded", str(error))
         self.assertEqual(client.quota_retry_at, error.retry_at)
 
+    def test_download_406_provider_daily_allowance_message_is_quota_and_parses_renewal_time(self):
+        body = __import__("json").dumps({
+            "message": (
+                "You have downloaded your allowed 100 subtitles for 24h."
+                "Your quota will be renewed in 15 hours and 27 minutes "
+                "(2026-11-11 23:59:59 UTC) ts=1794385941"
+            ),
+        }).encode()
+
+        def opener(request, timeout=30):
+            raise urllib.error.HTTPError(
+                request.full_url, 406, "Not Acceptable", {},
+                __import__("io").BytesIO(body),
+            )
+
+        client = OpenSubtitlesClient("test-secret", opener=opener)
+        with self.assertRaises(OpenSubtitlesError) as raised:
+            client._json_request("/download", body={"file_id": 123})
+
+        error = raised.exception
+        self.assertEqual(error.error_code, "download_quota_reached")
+        self.assertTrue(error.retryable)
+        self.assertEqual(error.retry_at, "2026-11-11T23:59:59+00:00")
+        self.assertEqual(client.quota_retry_at, error.retry_at)
+        self.assertIn("allowed 100 subtitles", error.provider_error_detail)
+
     def test_download_406_without_quota_message_is_not_misclassified(self):
         body = __import__("json").dumps({"message": "Invalid file_id"}).encode()
         def opener(request, timeout=30):
