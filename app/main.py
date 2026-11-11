@@ -126,12 +126,13 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                    "download_count": candidate["download_count"],
                    "candidate_limit": limit, "selected_count": rank},
         )
-        row = save_candidate(
-            relative_media_path, stat_result.st_size, stat_result.st_mtime, candidate,
-            media_modified_ns=stat_result.st_mtime_ns,
-            media_device=stat_result.st_dev,
-            media_inode=stat_result.st_ino,
-        )
+        with timed_stage("candidate_database_save", media_path=relative_media_path):
+            row = save_candidate(
+                relative_media_path, stat_result.st_size, stat_result.st_mtime, candidate,
+                media_modified_ns=stat_result.st_mtime_ns,
+                media_device=stat_result.st_dev,
+                media_inode=stat_result.st_ino,
+            )
         status = row["status"]
         logger.debug(
             "subtitle_candidate_persisted",
@@ -149,14 +150,16 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
             status = "cancelled"
         if status not in {"staged", "cancelled"}:
             try:
-                with timed_stage("candidate_download_and_assessment",
-                                 media_path=relative_media_path, candidate_id=row["id"],
-                                 tool="opensubtitles"):
+                with timed_stage("candidate_download", media_path=relative_media_path,
+                                 candidate_id=row["id"], tool="opensubtitles"):
                     downloaded = client.download_if_available(candidate["file_id"])
-                    if downloaded is None:
-                        status = "download_quota_reached"
-                    else:
-                        file_name, payload, remaining = downloaded
+                if downloaded is None:
+                    status = "download_quota_reached"
+                else:
+                    file_name, payload, remaining = downloaded
+                    with timed_stage("candidate_content_assessment",
+                                     media_path=relative_media_path,
+                                     candidate_id=row["id"]):
                         assessment = assess_subtitle_payload(
                             file_name, payload, expected_language=candidate["language"]
                         )
@@ -165,18 +168,21 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                 if status not in {"download_quota_reached", "cancelled"}:
                     detected_language = assessment.get("content_language")
                     if detected_language and not language_matches(detected_language, candidate["language"]):
-                        mark_candidate_error(
-                            row["id"],
-                            "Downloaded subtitle content does not match the candidate's declared language.",
-                            status="rejected_language_mismatch",
-                        )
+                        with timed_stage("candidate_database_mark_error",
+                                         media_path=relative_media_path,
+                                         candidate_id=row["id"]):
+                            mark_candidate_error(
+                                row["id"],
+                                "Downloaded subtitle content does not match the candidate's declared language.",
+                                status="rejected_language_mismatch",
+                            )
                         status = "rejected_language_mismatch"
                     else:
                         staging_root.mkdir(parents=True, exist_ok=True)
                         extension = Path(file_name).suffix.lower()
                         target = staging_root / f"candidate-{row['id']}{extension}"
                         temporary = staging_root / f".candidate-{row['id']}-{uuid.uuid4().hex}.part"
-                        with timed_stage("candidate_stage_write",
+                        with timed_stage("candidate_staging_file_write",
                                          media_path=relative_media_path, candidate_id=row["id"],
                                          bytes_processed=len(payload)):
                             descriptor = os.open(
@@ -187,19 +193,26 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                                 staged_file.flush()
                                 os.fsync(staged_file.fileno())
                             os.replace(temporary, target)
-                        mark_candidate_staged(
-                            row["id"], str(target), remaining, assessment,
-                            file_name=Path(file_name).name,
-                            subtitle_format=extension.lstrip("."),
-                        )
+                        with timed_stage("candidate_database_mark_staged",
+                                         media_path=relative_media_path,
+                                         candidate_id=row["id"]):
+                            mark_candidate_staged(
+                                row["id"], str(target), remaining, assessment,
+                                file_name=Path(file_name).name,
+                                subtitle_format=extension.lstrip("."),
+                            )
                         status = "staged"
                         logger.info("subtitle_candidate_staged", extra={"event":"subtitle_candidate_staged","candidate_id":row["id"],"media_path":relative_media_path,"phase":"download","status":"staged"})
             except OpenSubtitlesError as exc:
-                mark_candidate_error(row["id"], str(exc))
+                with timed_stage("candidate_database_mark_error",
+                                 media_path=relative_media_path, candidate_id=row["id"]):
+                    mark_candidate_error(row["id"], str(exc))
                 status = "download_failed"
                 logger.warning("subtitle_candidate_download_failed", extra={"event":"subtitle_candidate_download_failed","candidate_id":row["id"],"media_path":relative_media_path,"phase":"download","error_type":type(exc).__name__})
             except OSError:
-                mark_candidate_error(row["id"], "Could not write the staged subtitle file.")
+                with timed_stage("candidate_database_mark_error",
+                                 media_path=relative_media_path, candidate_id=row["id"]):
+                    mark_candidate_error(row["id"], "Could not write the staged subtitle file.")
                 status = "download_failed"
         if status == "staged":
             summary["staged"] += 1
@@ -1311,7 +1324,10 @@ def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
         if details is None:
             # Keep FFmpeg/FFprobe work serial on modest hosts while allowing
             # provider discovery and staging for other files to overlap.
-            with inspection_lock:
+            with timed_stage("media_inspection_lock_wait", job_id=job_id,
+                             media_path=media_relative_path):
+                inspection_lock.acquire()
+            try:
                 if not _scan_job_is_running(job_id):
                     return {
                         "media_path": media_relative_path,
@@ -1326,6 +1342,8 @@ def _scan_one_file(job_id: int, root: Path, media_root: Path, path: Path,
                 if _scan_file_identity(inspected_stat) != _scan_file_identity(stat_result):
                     raise OSError("Media file changed during inspection; retry the scan.")
                 stat_result = inspected_stat
+            finally:
+                inspection_lock.release()
             with timed_stage("scan_record_persistence", job_id=job_id,
                              media_path=media_relative_path):
                 record_scan(

@@ -4,38 +4,59 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from app.config import settings
+from app.observability import timed_stage
 
 
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 
 
 @contextmanager
-def connect():
+def connect(operation: str | None = None, *, media_path: str | None = None):
     """Open a short-lived SQLite connection with bounded lock waiting.
 
     The context manager commits successful work, rolls back failures, and always
     closes the connection. sqlite3.Connection's built-in context manager does
     not close connections, which can otherwise leave file handles alive longer
-    than intended.
+    than intended. An optional operation name enables targeted connection and
+    transaction timing for scan profiling.
     """
     db_path = Path(settings.database_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(
-        db_path,
-        timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
-        check_same_thread=True,
-    )
-    connection.row_factory = sqlite3.Row
-    connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-    connection.execute("PRAGMA foreign_keys=ON")
+    if operation:
+        with timed_stage(f"{operation}_db_connection_setup", media_path=media_path):
+            connection = sqlite3.connect(
+                db_path,
+                timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
+                check_same_thread=True,
+            )
+            connection.row_factory = sqlite3.Row
+            connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+            connection.execute("PRAGMA foreign_keys=ON")
+    else:
+        connection = sqlite3.connect(
+            db_path,
+            timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
+            check_same_thread=True,
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        connection.execute("PRAGMA foreign_keys=ON")
     try:
         yield connection
-        connection.commit()
+        if operation:
+            with timed_stage(f"{operation}_db_commit", media_path=media_path):
+                connection.commit()
+        else:
+            connection.commit()
     except Exception:
         connection.rollback()
         raise
     finally:
-        connection.close()
+        if operation:
+            with timed_stage(f"{operation}_db_close", media_path=media_path):
+                connection.close()
+        else:
+            connection.close()
 
 
 def initialize():
@@ -209,27 +230,34 @@ def get_cached_scan(relative_path: str, stat_result) -> dict | None:
 def record_scan(relative_path: str, size: int | None, modified_at: float | None,
                 inspection: dict | None = None, *, modified_ns: int | None = None,
                 device: int | None = None, inode: int | None = None):
-    with connect() as db:
-        previous = db.execute(
-            "SELECT modified_ns, device, inode FROM media_files WHERE relative_path=?",
-            (relative_path,),
-        ).fetchone()
+    with connect("scan_record", media_path=relative_path) as db:
+        with timed_stage("scan_record_db_previous_lookup", media_path=relative_path,
+                         database_operation="select_previous_identity"):
+            previous = db.execute(
+                "SELECT modified_ns, device, inode FROM media_files WHERE relative_path=?",
+                (relative_path,),
+            ).fetchone()
         if previous is not None and (
             previous["modified_ns"], previous["device"], previous["inode"]
         ) != (modified_ns, device, inode):
             # A changed file version invalidates old approvals, even when its
             # size and coarse modification timestamp happen to be identical.
-            db.execute(
-                """UPDATE subtitle_candidates
-                   SET review_decision='pending', review_updated_at=NULL,
-                       patch_status=CASE WHEN patch_status='patched' THEN 'not_started' ELSE patch_status END,
-                       patch_started_at=CASE WHEN patch_status='patched' THEN NULL ELSE patch_started_at END,
-                       patch_completed_at=CASE WHEN patch_status='patched' THEN NULL ELSE patch_completed_at END,
-                       updated_at=CURRENT_TIMESTAMP
-                   WHERE media_relative_path=? AND patch_status!='running'""",
-                (relative_path,),
-            )
-        db.execute("""
+            with timed_stage("scan_record_db_invalidate_candidates",
+                             media_path=relative_path,
+                             database_operation="invalidate_changed_media_candidates"):
+                db.execute(
+                    """UPDATE subtitle_candidates
+                       SET review_decision='pending', review_updated_at=NULL,
+                           patch_status=CASE WHEN patch_status='patched' THEN 'not_started' ELSE patch_status END,
+                           patch_started_at=CASE WHEN patch_status='patched' THEN NULL ELSE patch_started_at END,
+                           patch_completed_at=CASE WHEN patch_status='patched' THEN NULL ELSE patch_completed_at END,
+                           updated_at=CURRENT_TIMESTAMP
+                       WHERE media_relative_path=? AND patch_status!='running'""",
+                    (relative_path,),
+                )
+        with timed_stage("scan_record_db_media_upsert", media_path=relative_path,
+                         database_operation="upsert_media_inspection"):
+            db.execute("""
             INSERT INTO media_files(
                 relative_path, size, modified_at, modified_ns, device, inode,
                 has_verified_english_subtitle, inspection_json
@@ -247,7 +275,7 @@ def record_scan(relative_path: str, size: int | None, modified_at: float | None,
             relative_path, size, modified_at, modified_ns, device, inode,
             int(bool((inspection or {}).get("has_verified_english_subtitle"))),
             json.dumps(inspection or {}),
-        ))
+            ))
 
 
 def save_candidate(media_relative_path: str, media_size: int, media_modified_at: float,
