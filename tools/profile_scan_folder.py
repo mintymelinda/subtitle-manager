@@ -14,9 +14,9 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from app import main as scan_module
 from app.config import settings
 from app.database import create_job, get_job, initialize
-from app.main import _scan_worker
 from app.observability import configure_logging, logger
 
 
@@ -32,6 +32,7 @@ CAPTURED_EVENTS = {
     "subtitle_candidate_staging_summary",
     "media_scan_completed",
     "media_scan_failed",
+    "profile_file_timing",
 }
 OUTER_FILE_STAGES = {"media_inspection", "candidate_staging"}
 
@@ -61,6 +62,7 @@ class ProfileCapture(logging.Handler):
                 "media_path": getattr(record, "media_path", None),
                 "phase": getattr(record, "phase", None),
                 "status": getattr(record, "status", None),
+                "elapsed_ms": getattr(record, "elapsed_ms", None),
                 "file_count": getattr(record, "file_count", None),
                 "provider_count": getattr(record, "provider_count", None),
                 "selected_count": getattr(record, "selected_count", None),
@@ -94,7 +96,7 @@ def summarize_stages(stages):
     return summary
 
 
-def slowest_files(stages, limit=20):
+def slowest_files(stages, events, limit=20):
     by_file = defaultdict(lambda: defaultdict(list))
     for item in stages:
         path = item["media_path"]
@@ -102,23 +104,25 @@ def slowest_files(stages, limit=20):
         if path and isinstance(elapsed, (int, float)):
             by_file[path][item["stage"]].append(elapsed)
 
+    wall_times = {
+        item["media_path"]: item["elapsed_ms"]
+        for item in events
+        if item["event"] == "profile_file_timing"
+        and item["media_path"]
+        and isinstance(item["elapsed_ms"], (int, float))
+    }
     ranked = []
-    for path, stage_values in by_file.items():
-        # Use only the two outer per-file stages here. Their nested FFprobe,
-        # FFmpeg, and provider timings are shown separately in stage_summary.
-        outer_total = sum(
-            sum(values) for stage, values in stage_values.items()
-            if stage in OUTER_FILE_STAGES
-        )
+    for path in set(by_file) | set(wall_times):
+        stage_values = by_file[path]
         ranked.append({
             "media_path": path,
-            "outer_pipeline_ms": round(outer_total, 2),
+            "file_wall_clock_ms": round(wall_times.get(path, 0), 2),
             "stages_ms": {
                 stage: round(sum(values), 2)
                 for stage, values in sorted(stage_values.items())
             },
         })
-    return sorted(ranked, key=lambda item: item["outer_pipeline_ms"], reverse=True)[:limit]
+    return sorted(ranked, key=lambda item: item["file_wall_clock_ms"], reverse=True)[:limit]
 
 
 def main():
@@ -147,6 +151,25 @@ def main():
     logger.setLevel(logging.INFO)
     capture = ProfileCapture()
     logger.addHandler(capture)
+    original_scan_one_file = scan_module._scan_one_file
+
+    def timed_scan_one_file(job_id, root, scan_root, path, *worker_args, **worker_kwargs):
+        started = time.perf_counter()
+        try:
+            return original_scan_one_file(
+                job_id, root, scan_root, path, *worker_args, **worker_kwargs
+            )
+        finally:
+            logger.info(
+                "profile_file_timing",
+                extra={
+                    "event": "profile_file_timing",
+                    "job_id": job_id,
+                    "media_path": path.relative_to(media_root).as_posix(),
+                    "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+                },
+            )
+
     started = time.perf_counter()
     job_id = None
     job_result = None
@@ -158,10 +181,12 @@ def main():
             "profile": True,
         })
         job_id = job["id"]
-        _scan_worker(job_id, media_root, [folder], languages)
+        scan_module._scan_one_file = timed_scan_one_file
+        scan_module._scan_worker(job_id, media_root, [folder], languages)
         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
         job_result = get_job(job_id)
     finally:
+        scan_module._scan_one_file = original_scan_one_file
         logger.removeHandler(capture)
 
     events_by_name = Counter(item["event"] for item in capture.events)
@@ -189,12 +214,12 @@ def main():
             if cache_hits + cache_misses else None,
         },
         "stage_summary": summarize_stages(capture.stages),
-        "slowest_files": slowest_files(capture.stages),
+        "slowest_files": slowest_files(capture.stages, capture.events),
         "notes": [
             "This invokes the production scan worker and uses its normal database and staging behavior.",
             "Media files are inspected only; this profiler does not patch or rewrite them.",
+            "File wall-clock timings include cache lookup and all per-file work.",
             "Stage timings are nested. Do not add a parent stage to its child stages.",
-            "Slowest-file ranking uses only media_inspection and candidate_staging outer stages.",
             "A configured OpenSubtitles provider may perform real searches and candidate downloads.",
         ],
     }
