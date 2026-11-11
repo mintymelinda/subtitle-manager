@@ -36,6 +36,7 @@ class ObservabilityTests(unittest.TestCase):
         record.retryable = True
         record.http_status = 429
         record.error_message = "Provider rate limit; api_key=must-not-appear"
+        record.provider_error_detail = "Invalid file_id; token=must-not-appear"
         payload = json.loads(JsonFormatter().format(record))
         self.assertEqual(payload["filter_reason"], "unsupported_language")
         self.assertEqual(payload["provider_count"], 13)
@@ -43,6 +44,7 @@ class ObservabilityTests(unittest.TestCase):
         self.assertIs(payload["retryable"], True)
         self.assertEqual(payload["http_status"], 429)
         self.assertEqual(payload["error_message"], "Provider rate limit; api_key=[REDACTED]")
+        self.assertEqual(payload["provider_error_detail"], "Invalid file_id; token=[REDACTED]")
         self.assertNotIn("must-not-appear", json.dumps(payload))
         self.assertIn("api_key=[REDACTED]", payload["message"])
 
