@@ -303,6 +303,46 @@ class OpenSubtitlesTests(unittest.TestCase):
         self.assertFalse(raised.exception.retryable)
         self.assertIsNone(client.quota_retry_at)
 
+    def test_download_406_exposes_only_sanitized_bounded_provider_detail(self):
+        detail = "Invalid file_id; api_key=provider-secret https://example.test/download/signed-token"
+        body = __import__("json").dumps({"message": detail}).encode()
+
+        def opener(request, timeout=30):
+            raise urllib.error.HTTPError(
+                request.full_url, 406, "Not Acceptable", {},
+                __import__("io").BytesIO(body),
+            )
+
+        client = OpenSubtitlesClient("test-secret", opener=opener)
+        with self.assertRaises(OpenSubtitlesError) as raised:
+            client._json_request("/download", body={"file_id": 123})
+
+        error = raised.exception
+        self.assertEqual(error.error_code, "provider_request_rejected")
+        self.assertFalse(error.retryable)
+        self.assertIn("Invalid file_id", error.provider_error_detail)
+        self.assertIn("api_key=[REDACTED]", error.provider_error_detail)
+        self.assertIn("[URL REDACTED]", error.provider_error_detail)
+        self.assertNotIn("provider-secret", error.provider_error_detail)
+        self.assertNotIn("signed-token", error.provider_error_detail)
+        self.assertLessEqual(len(error.provider_error_detail), 240)
+        self.assertNotIn("provider-secret", str(error))
+        self.assertIsNone(client.quota_retry_at)
+
+    def test_download_406_malformed_body_has_no_provider_detail(self):
+        def opener(request, timeout=30):
+            raise urllib.error.HTTPError(
+                request.full_url, 406, "Not Acceptable", {},
+                __import__("io").BytesIO(b"<html>upstream failure</html>"),
+            )
+
+        client = OpenSubtitlesClient("test-secret", opener=opener)
+        with self.assertRaises(OpenSubtitlesError) as raised:
+            client._json_request("/download", body={"file_id": 123})
+
+        self.assertEqual(raised.exception.error_code, "provider_request_rejected")
+        self.assertIsNone(raised.exception.provider_error_detail)
+
     def test_quota_block_prevents_further_download_requests(self):
         client = OpenSubtitlesClient("test-secret")
         client.quota_retry_at = "2026-11-12T00:00:00+00:00"
