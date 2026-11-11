@@ -280,6 +280,7 @@ class OpenSubtitlesClient:
                 quota_match = any(term in provider_text for term in (
                     "quota exceeded", "daily limit", "download limit",
                     "download quota", "limit exceeded", "downloads limit",
+                    "downloaded your allowed", "quota will be renewed",
                 ))
                 if quota_match:
                     retry_at = None
@@ -299,6 +300,22 @@ class OpenSubtitlesClient:
                             break
                         except (TypeError, ValueError, OverflowError, OSError):
                             continue
+                    # OpenSubtitles sometimes embeds the UTC renewal time in
+                    # its human-readable quota message instead of a reset field.
+                    if retry_at is None:
+                        for message in messages:
+                            match = re.search(
+                                r"\b(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*UTC\b",
+                                message,
+                            )
+                            if match:
+                                try:
+                                    retry_at = datetime.fromisoformat(
+                                        match.group(1)
+                                    ).replace(tzinfo=timezone.utc)
+                                    break
+                                except ValueError:
+                                    continue
                     if retry_at is None:
                         retry_header = exc.headers.get("Retry-After") if exc.headers else None
                         try:
