@@ -288,6 +288,7 @@ def stage_candidates(client: OpenSubtitlesClient, path: Path, media_root: Path,
                         "retryable": exc.retryable,
                         "http_status": exc.http_status,
                         "error_message": str(exc),
+                        "provider_error_detail": exc.provider_error_detail,
                     },
                 )
             except OSError:
