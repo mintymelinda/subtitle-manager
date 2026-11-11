@@ -32,7 +32,7 @@ class JsonFormatter(logging.Formatter):
             "message": record.getMessage(),
         }
         for key in ("event", "job_id", "candidate_id", "media_path", "phase", "status", "error_type",
-                     "error_code", "retryable", "http_status", "error_message",
+                     "error_code", "retryable", "http_status", "error_message", "provider_error_detail",
                      "provider_count", "result_count", "accepted_count", "filtered_count",
                      "filter_reason", "language", "file_count", "file_name", "file_id",
                      "match_score", "match_reasons", "moviehash_match", "download_count",
