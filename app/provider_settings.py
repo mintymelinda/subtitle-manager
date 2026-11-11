@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+
 def settings_path() -> Path:
     return Path(os.environ.get("SUBTITLE_SETTINGS_PATH", "/app/data/opensubtitles-settings.json"))
 
