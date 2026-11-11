@@ -707,65 +707,80 @@ def _job_row(row):
     return item
 
 
-def start_job(job_id: int):
-    with connect() as db:
+def start_job(job_id: int, *, writer=None):
+    def persist(db):
         db.execute(
             """UPDATE jobs SET status='running', started_at=CURRENT_TIMESTAMP,
-               updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='queued'""",
-            (job_id,),
+               updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='queued'""", (job_id,)
         )
+    _scan_write(writer, "job_start", persist)
 
 
 def update_job_progress(job_id: int, *, phase: str | None = None,
                         current_file: str | None = None, completed: int | None = None,
                         succeeded: int | None = None, failed: int | None = None,
-                        total: int | None = None):
-    assignments = ["updated_at=CURRENT_TIMESTAMP"]
-    values = []
-    for column, value in (("phase", phase), ("current_file", current_file),
-                          ("completed", completed), ("succeeded", succeeded),
-                          ("failed", failed), ("total", total)):
-        if value is not None:
-            assignments.append(f"{column}=?")
-            values.append(value)
-    values.append(job_id)
-    with connect() as db:
-        db.execute(f"UPDATE jobs SET {', '.join(assignments)} WHERE id=?", values)
+                        total: int | None = None, writer=None):
+    changed = [(key, value) for key, value in (
+        ('phase', phase), ('current_file', current_file), ('completed', completed),
+        ('succeeded', succeeded), ('failed', failed), ('total', total)
+    ) if value is not None]
+    if not changed:
+        return
+    assignments = [f"{key}=?" for key, _ in changed]
+    conditions = [f"{key} IS NOT ?" for key, _ in changed]
+    values = [value for _, value in changed]
+    def persist(db):
+        db.execute(
+            f"UPDATE jobs SET updated_at=CURRENT_TIMESTAMP, {', '.join(assignments)} "
+            f"WHERE id=? AND ({' OR '.join(conditions)})",
+            values + [job_id] + values,
+        )
+    _scan_write(writer, "job_progress", persist)
 
 
-def record_job_item(job_id: int, *, media_path: str, status: str,
-                    phase: str, candidate_id: int | None = None,
-                    review_decision: str | None = None,
+def record_job_item(job_id: int, *, media_path: str, status: str, phase: str,
+                    candidate_id: int | None = None, review_decision: str | None = None,
                     patch_status: str | None = None, error: str | None = None,
-                    details: dict | None = None):
-    with connect() as db:
+                    details: dict | None = None, writer=None):
+    details_json = json.dumps(details or {})
+    normalized_error = (error or '')[:500]
+    def persist(db):
         db.execute(
             """INSERT INTO job_items(job_id, media_path, candidate_id, status, phase,
                    review_decision, patch_status, error, details_json, completed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ?='running' THEN NULL ELSE CURRENT_TIMESTAMP END)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                   CASE WHEN ?='running' THEN NULL ELSE CURRENT_TIMESTAMP END)
                ON CONFLICT(job_id, media_path) DO UPDATE SET
                    candidate_id=COALESCE(excluded.candidate_id, job_items.candidate_id),
                    status=excluded.status, phase=excluded.phase,
                    review_decision=COALESCE(excluded.review_decision, job_items.review_decision),
                    patch_status=COALESCE(excluded.patch_status, job_items.patch_status),
                    error=excluded.error, details_json=excluded.details_json,
-                   completed_at=excluded.completed_at""",
-            (job_id, media_path, candidate_id, status, phase,
-             review_decision, patch_status, (error or "")[:500],
-             json.dumps(details or {}), status),
+                   completed_at=excluded.completed_at
+               WHERE job_items.candidate_id IS NOT excluded.candidate_id
+                  OR job_items.status IS NOT excluded.status
+                  OR job_items.phase IS NOT excluded.phase
+                  OR job_items.error IS NOT excluded.error
+                  OR job_items.details_json IS NOT excluded.details_json
+                  OR job_items.completed_at IS NOT excluded.completed_at""",
+            (job_id, media_path, candidate_id, status, phase, review_decision,
+             patch_status, normalized_error, details_json, status),
         )
+    _scan_write(writer, "job_item", persist, media_path=media_path)
 
 
-def finish_job(job_id: int, status: str, error: str | None = None):
+def finish_job(job_id: int, status: str, error: str | None = None, *, writer=None):
     if status not in {"completed", "failed", "cancelled", "interrupted"}:
         raise ValueError("Invalid terminal job state.")
-    with connect() as db:
+    normalized_error = (error or '')[:500] or None
+    def persist(db):
         db.execute(
             """UPDATE jobs SET status=?, phase=?, current_file=NULL, error=?,
                finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
                WHERE id=? AND status IN ('queued','running')""",
-            (status, status, (error or "")[:500] or None, job_id),
+            (status, status, normalized_error, job_id),
         )
+    _scan_write(writer, "job_finish", persist)
 
 
 def get_job(job_id: int) -> dict | None:
