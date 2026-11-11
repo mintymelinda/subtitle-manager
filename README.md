@@ -45,9 +45,9 @@ A self-hosted web application for finding missing English subtitles and adding a
 
 - Support for non-MKV media containers; the transactional patcher currently supports MKV only.
 
-## Release 1.0.1
+## Release 1.0.3
 
-Subtitle Manager 1.0.1 includes the MIT license and automated GHCR image publishing. The supported media-modification workflow is limited to MKV files; other video containers are not scanned for subtitle injection.
+Subtitle Manager 1.0.3 improves scan performance, OpenSubtitles quota handling and download diagnostics, and adds an explicitly confirmed automatic subtitle cleanup workflow. The 144-file scan benchmark completed in approximately 56 seconds with all files successful and ten subtitle candidates staged. The release also includes the MIT license and automated multi-platform GHCR image publishing. The supported media-modification workflow remains limited to MKV files.
 
 For a new installation, follow [Quick start](#quick-start). Keep the persistent `./data` directory backed up because it contains the SQLite database and saved OpenSubtitles settings.
 
@@ -101,7 +101,7 @@ docker compose -f docker-compose.ghcr.yml pull
 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
-By default this uses the `latest` tag. To pin a release, set `IMAGE_TAG=1.0.1` in `.env` (or export it in the shell) before running Compose. For a private package, authenticate with a GitHub personal access token (classic) that has `read:packages` scope before pulling:
+By default this uses the `latest` tag. To pin a release, set `IMAGE_TAG=1.0.3` in `.env` (or export it in the shell) before running Compose. For a private package, authenticate with a GitHub personal access token (classic) that has `read:packages` scope before pulling:
 
 ```sh
 echo "$CR_PAT" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
