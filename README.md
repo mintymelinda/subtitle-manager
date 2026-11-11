@@ -68,7 +68,6 @@ Application logs are emitted as one JSON object per line to standard output, sui
 
 Provider settings are written atomically to `/app/data/opensubtitles-settings.json` with owner-only file permissions. The Compose `./data:/app/data` volume keeps them across container recreation and image updates. Secrets are never returned by the settings or `/api/config` endpoints and are excluded from application log messages. Leave credential fields blank to retain saved values; use the explicit checkbox to clear optional account credentials. OpenSubtitles quotas and rate limits are controlled by the provider and may change.
 
-Existing installations that still have OpenSubtitles values in `.env` are supported as a one-time fallback until settings are saved through the dashboard.
 
 ## Requirements
 
@@ -109,6 +108,16 @@ echo "$CR_PAT" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
 ```
 
 Keep the `./data` directory and mounted media volume unchanged when switching from a locally built image to the registry image.
+
+## Scan profiling
+
+The real-folder scan profiler normally uses the OpenSubtitles credentials saved by the dashboard. For a one-off API-key override, set `PROFILE_OPENSUBTITLES_API_KEY` only on the profiler invocation. The override applies only to that scan, does not change persistent settings, and is not included in the profiler report. Optional OpenSubtitles username/password credentials continue to come from saved settings.
+
+Example:
+
+```sh
+PROFILE_OPENSUBTITLES_API_KEY="your-api-key" python tools/profile_scan_folder.py /media/tv/Futurama
+```
 
 ## Development
 
